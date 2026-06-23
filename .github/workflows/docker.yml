@@ -12,12 +12,10 @@
 name: Publish Docker image
 
 on:
-  push:
-    tags:
-      # The mirror is tagged with the manifest version (e.g. v0.1.0); type=semver
-      # parses this. A `slop-gate-v*` pattern would not parse as semver here, so
-      # it's intentionally omitted.
-      - "v*"
+  # Manual only. The multi-arch build (arm64 compiles cargo-mutants under QEMU
+  # emulation) takes 20-40 min, so releases are normally pushed from a local
+  # amd64 build instead. Run this from the Actions tab when an in-CI multi-arch
+  # rebuild is actually wanted.
   workflow_dispatch:
     inputs:
       tag:
