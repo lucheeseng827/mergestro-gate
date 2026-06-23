@@ -1,0 +1,8 @@
+# Keep the build context small: never ship build outputs to the image builder.
+target/
+**/target/
+fixtures/**/.git/
+.git/
+node_modules/
+.stryker-tmp/
+bench/out/
