@@ -60,7 +60,10 @@ pub fn is_available(runner: &dyn CommandRunner, repo: &Path) -> bool {
 }
 
 fn probe(runner: &dyn CommandRunner, repo: &Path, prog: &str, args: &[&str]) -> bool {
-    runner.run(prog, args, repo).map(|o| o.success).unwrap_or(false)
+    runner
+        .run(prog, args, repo)
+        .map(|o| o.success)
+        .unwrap_or(false)
 }
 
 /// Run PIT over the project, returning outcomes scoped to the changed files +
@@ -93,7 +96,11 @@ pub fn run(
             .context("running Maven PIT goal")?,
         BuildTool::Gradle => {
             let gradlew = cfg.repo.join("gradlew");
-            let prog = if gradlew.is_file() { "./gradlew" } else { "gradle" };
+            let prog = if gradlew.is_file() {
+                "./gradlew"
+            } else {
+                "gradle"
+            };
             runner
                 .run(prog, &["pitest"], &cfg.repo)
                 .context("running Gradle pitest task")?
@@ -327,8 +334,11 @@ mod tests {
     #[test]
     fn parses_and_scopes_to_lines() {
         // changed lines = {12}; the line-40 NO_COVERAGE is out of scope.
-        let r = parse_report(sample(), &allowed(&[("src/main/java/com/example/Calc.java", &[12])]))
-            .unwrap();
+        let r = parse_report(
+            sample(),
+            &allowed(&[("src/main/java/com/example/Calc.java", &[12])]),
+        )
+        .unwrap();
         assert_eq!(r.caught, 1); // KILLED
         assert_eq!(r.survivors.len(), 1); // SURVIVED on line 12
         assert_eq!(r.timed_out, 1); // TIMED_OUT on line 12

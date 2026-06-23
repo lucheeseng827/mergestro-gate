@@ -65,8 +65,8 @@ pub fn run(
     changes: &[FileChange],
     work_dir: &Path,
 ) -> Result<MutationResults> {
-    let test_runner = detect_runner(&cfg.repo)
-        .context("no @stryker-mutator/*-runner found in package.json")?;
+    let test_runner =
+        detect_runner(&cfg.repo).context("no @stryker-mutator/*-runner found in package.json")?;
 
     let report_path = work_dir.join("stryker-report.json");
     let cfg_path = work_dir.join("stryker.conf.json");
@@ -136,10 +136,7 @@ fn stryker_config(
 
 /// Parse a Stryker JSON report (mutation-testing report schema) into outcomes,
 /// keeping only mutants whose line is in the changed set for their file.
-fn parse_report(
-    json: &str,
-    allowed: &BTreeMap<String, BTreeSet<u32>>,
-) -> Result<MutationResults> {
+fn parse_report(json: &str, allowed: &BTreeMap<String, BTreeSet<u32>>) -> Result<MutationResults> {
     let value: serde_json::Value = serde_json::from_str(json).context("invalid JSON")?;
     let files = value
         .get("files")
@@ -320,7 +317,11 @@ mod tests {
     #[test]
     fn detect_runner_none_without_plugin() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("package.json"), r#"{ "devDependencies": {} }"#).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{ "devDependencies": {} }"#,
+        )
+        .unwrap();
         assert_eq!(detect_runner(dir.path()), None);
     }
 

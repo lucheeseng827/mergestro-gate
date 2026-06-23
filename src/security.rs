@@ -185,9 +185,8 @@ mod tests {
         // pattern (token: "...") and contains an env-read (env::var). The
         // reads_env suppression must fire. If reads_env always returned false
         // this test would fail.
-        let r = scan(
-            "let c = Config { token: \"hardcoded-fallback\", key: env::var(\"K\").ok() };\n",
-        );
+        let r =
+            scan("let c = Config { token: \"hardcoded-fallback\", key: env::var(\"K\").ok() };\n");
         assert!(
             !rules_hit(&r).contains(&"hardcoded-secret"),
             "hardcoded-secret must be suppressed when the same line also has an env read"

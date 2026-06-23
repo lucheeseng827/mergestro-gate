@@ -537,7 +537,10 @@ mod tests {
         let m2 = crate::metrics::RunMetrics::from_report(&r2, &Config::default(), &ctx);
         let s = summarize(&[m1, m2]);
         // r1 has 1 finding, r2 has 2 — the accumulation must be additive (+= not -= or *=).
-        assert_eq!(s.total_slop_findings, 3, "total_slop_findings must sum across runs");
+        assert_eq!(
+            s.total_slop_findings, 3,
+            "total_slop_findings must sum across runs"
+        );
     }
 
     #[test]
@@ -584,8 +587,7 @@ mod tests {
         let s = summarize(&[m1, m2]);
         // r1 has 1 finding, r2 has 2 — the accumulation must be additive (+= not -= or *=).
         assert_eq!(
-            s.total_security_findings,
-            3,
+            s.total_security_findings, 3,
             "total_security_findings must sum across runs"
         );
     }
@@ -634,8 +636,7 @@ mod tests {
         let s = summarize(&[m1, m2]);
         // r1 has 1 finding, r2 has 2 — the accumulation must be additive (+= not -= or *=).
         assert_eq!(
-            s.total_convention_findings,
-            3,
+            s.total_convention_findings, 3,
             "total_convention_findings must sum across runs"
         );
     }

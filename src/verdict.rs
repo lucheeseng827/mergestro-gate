@@ -308,7 +308,9 @@ mod tests {
         assert!(v.is_block());
         match v {
             Verdict::Block { reasons } => {
-                assert!(reasons.iter().any(|x| x.contains("rule `unknown-crate-import`")))
+                assert!(reasons
+                    .iter()
+                    .any(|x| x.contains("rule `unknown-crate-import`")))
             }
             _ => unreachable!(),
         }

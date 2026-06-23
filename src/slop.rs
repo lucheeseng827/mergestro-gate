@@ -127,9 +127,7 @@ pub fn added_lines(unified: &str) -> BTreeMap<String, BTreeSet<u32>> {
 /// From `@@ -a,b +c,d @@`, parse the new-side start `c`.
 fn parse_hunk_new_start(h: &str) -> Option<u32> {
     let plus = h.split('+').nth(1)?;
-    let num = plus
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .next()?;
+    let num = plus.split(|c: char| c == ',' || c.is_whitespace()).next()?;
     num.parse().ok()
 }
 
@@ -402,12 +400,13 @@ mod tests {
 
     #[test]
     fn flags_tautological_asserts() {
-        let r = scan_src(
-            "#[test]\nfn t() {\n  assert!(true);\n  assert_eq!(x, x);\n}\n",
-        );
+        let r = scan_src("#[test]\nfn t() {\n  assert!(true);\n  assert_eq!(x, x);\n}\n");
         let rules: Vec<_> = r.findings.iter().map(|f| f.rule.as_str()).collect();
         assert_eq!(
-            rules.iter().filter(|r| **r == "tautological-assert").count(),
+            rules
+                .iter()
+                .filter(|r| **r == "tautological-assert")
+                .count(),
             2
         );
     }
@@ -537,7 +536,10 @@ diff --git a/src/x.rs b/src/x.rs
             .iter()
             .find(|f| f.rule == "redundant-wrapper")
             .expect("should flag the wrapper on line 3");
-        assert_eq!(f.line, 3, "line_of must return the wrapper's actual source line");
+        assert_eq!(
+            f.line, 3,
+            "line_of must return the wrapper's actual source line"
+        );
     }
 
     #[test]
@@ -546,7 +548,8 @@ diff --git a/src/x.rs b/src/x.rs
         // segment ("MAX") matches the parameter name, but the qself guard must
         // prevent it from being treated as a plain-identifier argument — the
         // function must NOT be flagged as a redundant wrapper.
-        let src = "fn outer(MAX: u32) -> u32 { inner(<u32>::MAX) }\nfn inner(x: u32) -> u32 { x }\n";
+        let src =
+            "fn outer(MAX: u32) -> u32 { inner(<u32>::MAX) }\nfn inner(x: u32) -> u32 { x }\n";
         let r = scan_src(src);
         assert!(
             !r.findings.iter().any(|f| f.rule == "redundant-wrapper"),
@@ -616,7 +619,10 @@ diff --git a/src/x.rs b/src/x.rs
         let src = "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}\nfn e() {}\nfn f() {}\n// c1\n// c2\n// c3\n// c4\n// c5\n// c6\n// c7\n";
         let r = over_comment_finding("x.rs", src, &all_lines(src))
             .expect("should flag over-commented block");
-        assert_eq!(r.line, 7, "finding must report the actual first comment line");
+        assert_eq!(
+            r.line, 7,
+            "finding must report the actual first comment line"
+        );
     }
 
     #[test]

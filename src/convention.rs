@@ -245,7 +245,7 @@ version = "2"
         assert!(n.contains("gix"));
         assert!(n.contains("tempfile"));
         assert!(n.contains("fancy")); // dotted dependency table
-        // A dependency's own field lines must not leak in as crate names.
+                                      // A dependency's own field lines must not leak in as crate names.
         assert!(!n.contains("version"));
     }
 
@@ -258,7 +258,10 @@ version = "2"
         // quotes instead of being normalised.
         let txt = "[dependencies.\"hyp-henated\"]\nversion = \"1\"\n";
         let n = names(txt);
-        assert!(n.contains("hyp_henated"), "quoted dotted dep must be stripped and normalised");
+        assert!(
+            n.contains("hyp_henated"),
+            "quoted dotted dep must be stripped and normalised"
+        );
     }
 
     /// Scan a single source string against an explicit allowed set, treating
@@ -362,7 +365,11 @@ version = "2"
         .into();
         let r = scan_files(dir.path(), &["sub/src/lib.rs".to_string()], &added);
         // chrono is declared; ghost_crate is not — exactly one finding.
-        assert_eq!(r.findings.len(), 1, "subdirectory Cargo.toml must be discovered");
+        assert_eq!(
+            r.findings.len(),
+            1,
+            "subdirectory Cargo.toml must be discovered"
+        );
         assert!(r.findings[0].message.contains("ghost_crate"));
     }
 
@@ -388,7 +395,11 @@ version = "2"
             &["a/lib.rs".to_string(), "b/lib.rs".to_string()],
             &added,
         );
-        assert_eq!(r.findings.len(), 2, "each file must produce its own finding");
+        assert_eq!(
+            r.findings.len(),
+            2,
+            "each file must produce its own finding"
+        );
     }
 
     #[test]
@@ -403,7 +414,10 @@ version = "2"
             std::fs::write(sub.join("Cargo.toml"), "[package]\nname=\"demo\"\n").unwrap();
         }
         let (_paths, truncated) = find_manifests(dir.path());
-        assert!(truncated, "find_manifests must report truncation when the cap is hit");
+        assert!(
+            truncated,
+            "find_manifests must report truncation when the cap is hit"
+        );
         let (_roots, found) = allowed_roots(dir.path());
         assert!(!found, "truncated allow-list must fail open (found=false)");
     }

@@ -70,10 +70,7 @@ pub fn run(
 /// Parse a gremlins JSON report into outcomes, keeping only mutants whose line
 /// is in the changed set for their file. Tolerant of the schema's two shapes:
 /// a nested `files[].mutations[]` and a flat `mutants[]`/`mutations[]`.
-fn parse_report(
-    json: &str,
-    allowed: &BTreeMap<String, BTreeSet<u32>>,
-) -> Result<MutationResults> {
+fn parse_report(json: &str, allowed: &BTreeMap<String, BTreeSet<u32>>) -> Result<MutationResults> {
     let value: serde_json::Value = serde_json::from_str(json).context("invalid JSON")?;
     let mut results = MutationResults::default();
 
@@ -141,7 +138,9 @@ fn record_mutant(
     match normalize_status(&status).as_str() {
         "KILLED" => results.caught += 1,
         "LIVED" | "SURVIVED" | "NOTCOVERED" => {
-            results.survivors.push(make_mutant(key, line, column, &kind));
+            results
+                .survivors
+                .push(make_mutant(key, line, column, &kind));
         }
         "TIMEDOUT" => results.timed_out += 1,
         // NOTVIABLE / RUNERROR / unknown: no trustworthy result → unviable.

@@ -294,7 +294,10 @@ mod tests {
         for ok in [
             vec!["security".to_string()],
             vec!["all".to_string()],
-            vec!["hardcoded-secret".to_string(), "unknown-crate-import".to_string()],
+            vec![
+                "hardcoded-secret".to_string(),
+                "unknown-crate-import".to_string(),
+            ],
         ] {
             let cfg = Config {
                 block_on_pattern: ok.clone(),

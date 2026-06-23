@@ -32,9 +32,21 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
         .iter()
         .map(|c| c.path.clone())
         .collect();
-    report.changed_js_files = scope.changed_js_files.iter().map(|c| c.path.clone()).collect();
-    report.changed_go_files = scope.changed_go_files.iter().map(|c| c.path.clone()).collect();
-    report.changed_jvm_files = scope.changed_jvm_files.iter().map(|c| c.path.clone()).collect();
+    report.changed_js_files = scope
+        .changed_js_files
+        .iter()
+        .map(|c| c.path.clone())
+        .collect();
+    report.changed_go_files = scope
+        .changed_go_files
+        .iter()
+        .map(|c| c.path.clone())
+        .collect();
+    report.changed_jvm_files = scope
+        .changed_jvm_files
+        .iter()
+        .map(|c| c.path.clone())
+        .collect();
 
     if scope.changed_rust_files.is_empty()
         && scope.changed_python_files.is_empty()
@@ -338,7 +350,10 @@ mod tests {
                 ),
                 ("src/lib.rs", "use serde::Serialize;\n"),
             ],
-            &[("src/lib.rs", "use serde::Serialize;\nuse ghost_crate::Thing;\n")],
+            &[(
+                "src/lib.rs",
+                "use serde::Serialize;\nuse ghost_crate::Thing;\n",
+            )],
         );
         let runner = ScriptedRunner::new();
         runner.push_fail(101, "test failed"); // static signals run before pre-flight

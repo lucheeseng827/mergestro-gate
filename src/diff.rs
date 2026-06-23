@@ -382,8 +382,14 @@ mod tests {
         // line numbers. Guards the `!added_lines.is_empty()` gate in the Go
         // branch of render_change: deleting the `!` would drop non-empty files.
         let scope = scope_for_change(
-            &[("calc.go", "package main\n\nfunc Add(a, b int) int { return a + b }\n")],
-            &[("calc.go", "package main\n\nfunc Add(a, b int) int { return a + b + 0 }\n")],
+            &[(
+                "calc.go",
+                "package main\n\nfunc Add(a, b int) int { return a + b }\n",
+            )],
+            &[(
+                "calc.go",
+                "package main\n\nfunc Add(a, b int) int { return a + b + 0 }\n",
+            )],
         );
         let go: Vec<&str> = scope
             .changed_go_files

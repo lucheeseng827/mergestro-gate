@@ -467,7 +467,10 @@ impl GateReport {
 
         let slop_clear = self.slop.as_ref().is_none_or(|s| s.findings.is_empty());
         let security_clear = self.security.as_ref().is_none_or(|s| s.findings.is_empty());
-        let convention_clear = self.convention.as_ref().is_none_or(|s| s.findings.is_empty());
+        let convention_clear = self
+            .convention
+            .as_ref()
+            .is_none_or(|s| s.findings.is_empty());
         if self.survivors.is_empty()
             && self.zero_assertion_tests.is_empty()
             && slop_clear
@@ -864,7 +867,11 @@ mod tests {
         let mut r = GateReport::new("main", "HEAD");
         r.changed_rust_files = vec!["src/x.rs".into()];
         r.convention = Some(PatternReport {
-            findings: vec![convention_finding("unknown-crate-import", "src/auth.rs", 10)],
+            findings: vec![convention_finding(
+                "unknown-crate-import",
+                "src/auth.rs",
+                10,
+            )],
             score: 30,
         });
         let md = r.render_markdown();

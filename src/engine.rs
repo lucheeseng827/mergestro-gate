@@ -204,8 +204,10 @@ impl MutationEngine for PythonEngine {
     fn on_unavailable(&self, scope: &DiffScope) -> Result<()> {
         let n = scope.changed_python_files.len();
         if n == 0 {
-            bail!("PythonEngine::on_unavailable called with no changed Python files; \
-                   this is a programming error (applies() must be true before this is called)");
+            bail!(
+                "PythonEngine::on_unavailable called with no changed Python files; \
+                   this is a programming error (applies() must be true before this is called)"
+            );
         }
         eprintln!(
             "slop-gate: warning: cosmic-ray not found; skipping {n} changed Python file(s). \
@@ -266,8 +268,10 @@ impl MutationEngine for JsEngine {
     fn on_unavailable(&self, scope: &DiffScope) -> Result<()> {
         let n = scope.changed_js_files.len();
         if n == 0 {
-            bail!("JsEngine::on_unavailable called with no changed JS/TS files; \
-                   this is a programming error (applies() must be true before this is called)");
+            bail!(
+                "JsEngine::on_unavailable called with no changed JS/TS files; \
+                   this is a programming error (applies() must be true before this is called)"
+            );
         }
         eprintln!(
             "slop-gate: warning: Stryker not found or no @stryker-mutator/*-runner declared; \
@@ -327,8 +331,10 @@ impl MutationEngine for GoEngine {
     fn on_unavailable(&self, scope: &DiffScope) -> Result<()> {
         let n = scope.changed_go_files.len();
         if n == 0 {
-            bail!("GoEngine::on_unavailable called with no changed Go files; \
-                   this is a programming error (applies() must be true before this is called)");
+            bail!(
+                "GoEngine::on_unavailable called with no changed Go files; \
+                   this is a programming error (applies() must be true before this is called)"
+            );
         }
         eprintln!(
             "slop-gate: warning: gremlins not found; skipping {n} changed Go file(s). \
@@ -388,8 +394,10 @@ impl MutationEngine for JvmEngine {
     fn on_unavailable(&self, scope: &DiffScope) -> Result<()> {
         let n = scope.changed_jvm_files.len();
         if n == 0 {
-            bail!("JvmEngine::on_unavailable called with no changed Java/Kotlin files; \
-                   this is a programming error (applies() must be true before this is called)");
+            bail!(
+                "JvmEngine::on_unavailable called with no changed Java/Kotlin files; \
+                   this is a programming error (applies() must be true before this is called)"
+            );
         }
         eprintln!(
             "slop-gate: warning: no runnable Maven/Gradle + PIT setup found; \
@@ -575,11 +583,7 @@ mod tests {
             fn applies(&self, _: &DiffScope) -> bool {
                 false
             }
-            fn preflight(
-                &self,
-                _: &dyn CommandRunner,
-                _: &Config,
-            ) -> Result<PreflightOutcome> {
+            fn preflight(&self, _: &dyn CommandRunner, _: &Config) -> Result<PreflightOutcome> {
                 unimplemented!()
             }
             fn available(&self, _: &dyn CommandRunner, _: &Config) -> bool {
@@ -608,7 +612,11 @@ mod tests {
         let output_dir = crate::mutants::output_dir_for(work.path());
         let mutants_out = output_dir.join("mutants.out");
         std::fs::create_dir_all(&mutants_out).unwrap();
-        std::fs::write(mutants_out.join("caught.txt"), "src/lib.rs:1:1: replace f\n").unwrap();
+        std::fs::write(
+            mutants_out.join("caught.txt"),
+            "src/lib.rs:1:1: replace f\n",
+        )
+        .unwrap();
 
         let runner = ScriptedRunner::new();
         // list_candidates: cargo mutants --in-diff <diff> --list --json
@@ -619,7 +627,10 @@ mod tests {
         runner.push_ok("test result: ok");
 
         let run = RustEngine.analyze(&runner, &cfg, &sc, work.path()).unwrap();
-        assert_eq!(run.candidates, 1, "analyze must report the enumerated candidate count");
+        assert_eq!(
+            run.candidates, 1,
+            "analyze must report the enumerated candidate count"
+        );
         assert_eq!(run.capped_out, 0);
         assert_eq!(run.results.caught, 1);
     }
@@ -668,14 +679,16 @@ mod tests {
         let runner = ScriptedRunner::new();
         runner.push_ok("initialized"); // cosmic-ray init
         runner.push_ok("executed"); // cosmic-ray exec
-        // cosmic-ray dump: one killed mutant on line 2 (within the changed set)
+                                    // cosmic-ray dump: one killed mutant on line 2 (within the changed set)
         runner.push_ok(concat!(
             r#"[{"job_id":"j1","mutations":[{"module_path":"adult.py","operator_name":"core/Op","occurrence":0,"#,
             r#""start_pos":[2,1],"end_pos":[2,5],"operator_args":{},"definition_name":"f"}]},"#,
             r#"{"worker_outcome":"normal","output":"","test_outcome":"killed","diff":""}]"#
         ));
 
-        let run = PythonEngine.analyze(&runner, &cfg, &sc, work.path()).unwrap();
+        let run = PythonEngine
+            .analyze(&runner, &cfg, &sc, work.path())
+            .unwrap();
         assert_eq!(
             run.candidates, 1,
             "analyze must set candidates to the number of tested mutants"

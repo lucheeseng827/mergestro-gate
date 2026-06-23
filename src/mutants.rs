@@ -463,9 +463,11 @@ mod tests {
     fn mutation_args_passes_nextest_when_configured() {
         use crate::config::Config;
         let cargo = Config::default(); // test_tool = "cargo"
-        assert!(!mutation_args(&cargo, Path::new("d"), Path::new("o"), &[], &[])
-            .iter()
-            .any(|a| a == "--test-tool"));
+        assert!(
+            !mutation_args(&cargo, Path::new("d"), Path::new("o"), &[], &[])
+                .iter()
+                .any(|a| a == "--test-tool")
+        );
         let nextest = Config {
             test_tool: "nextest".into(),
             ..Config::default()
@@ -532,10 +534,7 @@ mod tests {
             package_name("[package]\nname.workspace = true\nversion = \"0.1\"\n"),
             None
         );
-        assert_eq!(
-            package_name("[package]\nname_x = \"oops\"\n"),
-            None
-        );
+        assert_eq!(package_name("[package]\nname_x = \"oops\"\n"), None);
     }
 
     #[test]
