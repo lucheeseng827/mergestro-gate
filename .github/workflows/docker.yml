@@ -34,6 +34,8 @@ concurrency:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    # DOCKERHUB_USERNAME / DOCKERHUB_TOKEN live in the 'cicd' environment.
+    environment: cicd
     steps:
       - uses: actions/checkout@v4
 
