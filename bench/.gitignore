@@ -1,0 +1,3 @@
+# Run artifacts — regenerate with `podman run … slop-gate-bench`.
+# The recorded baseline lives in ../BENCHMARK.md.
+out/

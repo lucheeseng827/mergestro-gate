@@ -1,0 +1,13 @@
+# Rust build artifacts
+/target
+
+# Engine scratch / local run output
+.stryker-tmp/
+bench/out/
+
+# Node (JS/TS engine tooling)
+node_modules/
+
+# Editor / OS
+*.swp
+.DS_Store

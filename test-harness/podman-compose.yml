@@ -1,0 +1,24 @@
+# Closed-environment harness for the Slop Filter behavioral merge gate.
+#
+# Building the image needs network access (to fetch crates, cargo-mutants and
+# build slop-gate). The gate RUN is network-isolated (`network_mode: none`) to
+# prove the gate does its job — diff, determinism pre-flight, mutation, verdict —
+# entirely offline.
+#
+#   podman compose -f podman-compose.yml build
+#   podman compose -f podman-compose.yml run --rm gate
+#
+# The same file works with Docker:
+#   docker compose -f podman-compose.yml build
+#   docker compose -f podman-compose.yml run --rm gate
+#
+# The build context is the parent directory (the mergestro-gate crate) so the image
+# can copy the crate sources and the demo fixture.
+services:
+  gate:
+    build:
+      context: ..
+      dockerfile: test-harness/Containerfile
+    image: slop-gate-harness:latest
+    # Closed: no network is attached while the gate runs.
+    network_mode: "none"

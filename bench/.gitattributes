@@ -1,0 +1,4 @@
+# These run inside a Linux container — force LF so the shebang/heredocs don't
+# break when checked out on Windows (autocrlf would otherwise insert CRLF).
+*.sh text eol=lf
+Containerfile text eol=lf

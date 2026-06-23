@@ -1,0 +1,40 @@
+# Example Phase 2 wiring — copy into a target repo's .github/workflows/.
+#
+# Phase 2 is a real gate: a blocked verdict exits non-zero and fails this
+# required check. Make it a required status check in branch protection to
+# actually block the merge. Set `advisory: "true"` to report without blocking.
+name: slop-gate
+
+on:
+  pull_request:
+
+# Needed so the gate can post / update its PR comment.
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  behavioral-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the merge-base against the target branch resolves.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Warm/reuse target/ so the baseline build isn't re-paid each run.
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Slop Filter behavioral gate
+        # Pin to a released tag (or a commit SHA) rather than @main so consumers
+        # don't pick up breaking changes unexpectedly.
+        uses: lucheeseng827/mergestro-gate@slop-gate-v0.2.0
+        with:
+          max-survivors: "0"
+          max-per-function: "5"
+          jobs: "4"
+          comment: "true"
+          # advisory: "true"                 # report without blocking
+          # block-on-zero-assertion: "true"  # also gate assertion-free tests

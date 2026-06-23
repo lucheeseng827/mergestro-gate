@@ -1,0 +1,79 @@
+# Slop Filter — gate configuration.
+# Every field is optional; omitted fields fall back to the built-in defaults.
+# CLI flags override anything set here.
+
+# Repository under test.
+repo: "."
+
+# Diff range. Pass the merge-base as base_ref for PR semantics (the GitHub
+# Action resolves it for you).
+base_ref: "origin/main"
+head_ref: "HEAD"
+
+# Parallelism for cargo-mutants (defaults to min(cores, 8)).
+jobs: 4
+
+# Per-mutant test timeout, in seconds.
+timeout_secs: 60
+
+# Core runtime lever: cap mutants tested per function.
+max_mutants_per_function: 5
+
+# Determinism pre-flight: run the suite this many times; all must be green and
+# stable before mutation results are trusted.
+preflight_runs: 2
+
+# Skip the pre-flight when CI has already proven the suite green this run.
+skip_preflight: false
+
+# Test command used by the Rust pre-flight (program first, then args).
+test_command:
+  - "cargo"
+  - "test"
+  - "--quiet"
+
+# Python adapter (advisory PoC): determinism pre-flight + cosmic-ray test
+# command for changed *.py files. Requires `pip install cosmic-ray`. Only used
+# when the diff touches Python; the joined string is run per mutant.
+python_test_command:
+  - "python3"
+  - "-m"
+  - "pytest"
+  - "-q"
+
+# ── Phase 2: gating ──────────────────────────────────────────────────────────
+# Block (fail the build) when survivors exceed max_survivors.
+block_on_survivors: true
+# Survivors tolerated before blocking. 0 means any survivor blocks.
+max_survivors: 0
+# Run the static zero-assertion test pre-check (the free second signal).
+check_zero_assertion_tests: true
+# Also block when assertion-free tests are found. Advisory by default — it's a
+# heuristic, so it scores but doesn't gate unless turned on.
+block_on_zero_assertion_tests: false
+
+# ── Phase 3: validation telemetry ────────────────────────────────────────────
+# Append a JSON-Lines run record (one object per run) for later analysis with
+# `slop-gate analyze --metrics-file <path>`. Omit to disable.
+# metrics_file: "slop-gate-metrics.jsonl"
+# POST the run record to a telemetry endpoint (best-effort). Bearer token read
+# from the METRICS_TOKEN env var if set. Omit to disable.
+# metrics_url: "https://example.com/slop-gate/ingest"
+
+# ── Phase 4: rollout (severity ranking + debt-delta budget) ──────────────────
+# Survivors are always ranked by severity in the report (most dangerous first).
+# Optionally block when any survivor reaches a tier, regardless of count —
+# useful to tighten the gate on auth/permission paths. Omit to keep it advisory.
+# block_on_severity: critical      # low | medium | high | critical
+# Per-PR structural-debt budget (net complexity + duplication + coupling added).
+# The debt-delta is always reported; set block_on_debt to gate on it.
+debt_budget: 25
+block_on_debt: false
+
+# Track B pattern lanes (slop / security / convention) are advisory by default.
+# Turn any into a hard gate by lane name or specific rule id. Omit to stay
+# advisory.
+# block_on_pattern:
+#   - security             # any security anti-pattern blocks
+#   - hardcoded-secret     # or gate a single rule across all lanes
+#   - unknown-crate-import

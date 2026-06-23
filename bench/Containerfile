@@ -1,0 +1,55 @@
+# COGS baseline harness for the Slop Filter behavioral merge gate.
+#
+# Bakes every mutation engine we want to compare into one image so the bench
+# runs offline and reproducibly:
+#   - cargo-mutants (Rust)   — the engine the gate actually shells out to
+#   - mutmut        (Python) — cross-language anchor
+#   - Stryker       (JS)     — cross-language anchor
+#
+# Build needs network (toolchains + the slop-gate binary). The bench run itself
+# is offline — see bench/README.md (`--network none`). All fixtures are
+# zero-dependency, so mutation testing never touches the network at run time.
+FROM rust:1-bookworm
+
+# --- system deps: git for diffs, python+pip, curl; Node 20 via NodeSource -----
+# (Debian bookworm ships Node 18, too old for current Stryker which imports
+# `styleText` from node:util — Node 20+.)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git ca-certificates python3 python3-pip python3-venv curl bc \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Rust mutation engine ---------------------------------------------------
+# Pinned to the version BENCHMARK.md records its baseline against, so a rebuild
+# can't silently drift to a newer cargo-mutants and invalidate the numbers.
+RUN cargo install cargo-mutants --version 27.1.0
+
+# --- Python mutation engine (mutmut) in an isolated venv --------------------
+# Pin to mutmut 2.x: the bench driver parses its `^N-...` results format, which
+# the 3.x rewrite changed. Major-version guards keep rebuilds reproducible.
+RUN python3 -m venv /opt/pyenv \
+    && /opt/pyenv/bin/pip install --no-cache-dir 'mutmut<3' 'pytest<9'
+ENV PATH="/opt/pyenv/bin:${PATH}"
+
+# --- JS mutation engine (Stryker + mocha runner) ----------------------------
+# Major-version pins: Stryker 8 / mocha 10 (the versions this harness was built
+# against); avoids drift to a breaking major on rebuild.
+RUN npm install -g --silent \
+        '@stryker-mutator/core@^8' \
+        '@stryker-mutator/mocha-runner@^8' \
+        'mocha@^10'
+
+# --- build + install the gate binary from the crate source ------------------
+WORKDIR /opt/slop-gate
+COPY Cargo.toml ./
+COPY src ./src
+RUN cargo install --path . --bin slop-gate && rm -rf /opt/slop-gate
+
+# --- the bench driver -------------------------------------------------------
+COPY bench/run-bench.sh /usr/local/bin/slop-gate-bench
+RUN chmod +x /usr/local/bin/slop-gate-bench
+
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/slop-gate-bench"]

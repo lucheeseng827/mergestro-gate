@@ -1,0 +1,33 @@
+Mergestro Gate (slop-gate)
+Copyright 2026 lucheeseng827
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The paid control plane under `ee/` (Mergestro) is NOT covered by this license;
+it is source-available under the Elastic License 2.0 — see ee/*/LICENSE.
+
+---
+
+This software shells out to, and/or links, the following third-party tools and
+libraries, each under its own license. They are not redistributed here; their
+licenses govern their own use:
+
+Mutation engines (invoked as external tools):
+  - cargo-mutants (Rust)            — MIT
+  - cosmic-ray (Python)             — MIT
+  - Stryker (JavaScript/TypeScript) — Apache-2.0
+  - gremlins (Go)                   — Apache-2.0
+  - PIT / pitest (Java/Kotlin)      — Apache-2.0
+
+Rust dependencies (linked):
+  - gix (gitoxide)   — MIT OR Apache-2.0
+  - syn, quote, proc-macro2 — MIT OR Apache-2.0
+  - serde, serde_json, serde_yaml  — MIT OR Apache-2.0
+  - clap             — MIT OR Apache-2.0
+  - anyhow, tempfile — MIT OR Apache-2.0
+  - regex            — MIT OR Apache-2.0
+  - roxmltree        — MIT OR Apache-2.0
+  - ureq             — MIT OR Apache-2.0
+
+Full dependency licenses are reproduced in each crate's published package and
+can be regenerated with `cargo about` / `cargo deny`.

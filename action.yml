@@ -1,0 +1,255 @@
+name: "Slop Filter behavioral gate"
+description: >-
+  Differential mutation gate for Rust PRs. Surfaces survivors the test suite
+  passed over on the changed surface, flags assertion-free tests, and blocks the
+  merge when they exceed budget. Posts an idempotent PR comment.
+author: "lucheeseng827"
+branding:
+  icon: "filter"
+  color: "purple"
+
+inputs:
+  base-ref:
+    description: "Base branch to diff against. Defaults to the PR's base branch."
+    required: false
+    default: ""
+  config:
+    description: "Path to a slop-gate YAML config file."
+    required: false
+    default: ""
+  jobs:
+    description: "Parallel mutant jobs."
+    required: false
+    default: "4"
+  timeout:
+    description: "Per-mutant test timeout, in seconds."
+    required: false
+    default: "60"
+  max-per-function:
+    description: "Hard cap on mutants tested per function."
+    required: false
+    default: "5"
+  test-tool:
+    description: >-
+      Test runner cargo-mutants drives: `cargo` (default) or `nextest`
+      (per-process, highly parallel — often 2-3x faster; needs cargo-nextest).
+    required: false
+    default: ""
+  test-changed-package-only:
+    description: >-
+      In a workspace, narrow mutation tests to the changed crate (faster, but a
+      mutant caught only by a downstream crate's tests shows as a survivor).
+      Default runs the whole workspace's tests against each mutant.
+    required: false
+    default: "false"
+  max-survivors:
+    description: "Survivors tolerated before blocking (0 = any survivor blocks)."
+    required: false
+    default: "0"
+  advisory:
+    description: "Report but never block (Phase 1 behaviour)."
+    required: false
+    default: "false"
+  block-on-zero-assertion:
+    description: "Also block when assertion-free tests are found."
+    required: false
+    default: "false"
+  block-on-severity:
+    description: "Block when a survivor reaches this tier (low|medium|high|critical). Phase 4."
+    required: false
+    default: ""
+  debt-budget:
+    description: "Per-PR structural-debt budget (net complexity + duplication + coupling). Phase 4."
+    required: false
+    default: ""
+  block-on-debt:
+    description: "Also block when the debt-delta exceeds the budget. Phase 4."
+    required: false
+    default: "false"
+  block-on-pattern:
+    description: >-
+      Block when a pattern lane flags something. Comma-separated; each value is
+      a lane (slop|security|convention|all) or a rule id (e.g. hardcoded-secret,
+      unknown-crate-import). Advisory if empty.
+    required: false
+    default: ""
+  comment:
+    description: "Post / update the report as a PR comment."
+    required: false
+    default: "true"
+  metrics-file:
+    description: "Append a JSON-Lines validation record to this file (Phase 3)."
+    required: false
+    default: ""
+  enable-python:
+    description: >-
+      Install Python + cosmic-ray so changed `.py` files are mutation-tested
+      (advisory PoC). Off by default — your project's own test deps (e.g.
+      pytest) must already be installed for the Python suite to run.
+    required: false
+    default: "false"
+  python-version:
+    description: "Python version for the Python toolchain (when enable-python)."
+    required: false
+    default: "3.x"
+  cosmic-ray-version:
+    description: "Pinned cosmic-ray version (when enable-python). Pin to a known-good release for reproducible CI."
+    required: false
+    default: "8.4.6"
+  version:
+    description: "Release tag of the prebuilt slop-gate binary to install."
+    required: false
+    default: "slop-gate-v0.4.0"
+  token:
+    description: "GitHub token used to post the PR comment."
+    required: false
+    default: ""
+  release-token:
+    description: >-
+      Token with read access to the action repo's releases, used to fetch the
+      prebuilt binary via the authenticated GitHub asset API. Required when the
+      action repo is PRIVATE (the default GITHUB_TOKEN of a *different* consumer
+      repo cannot read it — supply a PAT or GitHub App token). Leave empty for a
+      public action repo. Also used to authenticate the source-build fallback.
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install cargo-mutants
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v cargo-mutants >/dev/null 2>&1; then
+          cargo install cargo-mutants --locked
+        fi
+
+    - name: Install cargo-nextest
+      if: ${{ inputs.test-tool == 'nextest' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v cargo-nextest >/dev/null 2>&1; then
+          cargo install cargo-nextest --locked
+        fi
+
+    - name: Install slop-gate
+      shell: bash
+      env:
+        ACTION_REPO: ${{ github.action_repository }}
+        VERSION: ${{ inputs.version }}
+        # Empty for a public action repo; a read-scoped PAT / App token when the
+        # action repo is private. Falls back to the comment token / GITHUB_TOKEN.
+        RELEASE_TOKEN: ${{ inputs.release-token != '' && inputs.release-token || (inputs.token != '' && inputs.token || github.token) }}
+      run: |
+        set -euo pipefail
+        DEST="$HOME/.cargo/bin"
+        mkdir -p "$DEST"
+        echo "$DEST" >> "$GITHUB_PATH"
+        if command -v slop-gate >/dev/null 2>&1; then
+          echo "slop-gate already installed"; exit 0
+        fi
+
+        # Keep the token out of any log line.
+        [ -n "${RELEASE_TOKEN}" ] && echo "::add-mask::${RELEASE_TOKEN}"
+
+        TARBALL="slop-gate-x86_64-unknown-linux-musl.tar.gz"
+        API="https://api.github.com/repos/${ACTION_REPO}"
+        auth=()
+        [ -n "${RELEASE_TOKEN}" ] && auth=(-H "Authorization: Bearer ${RELEASE_TOKEN}")
+
+        # Resolve the release by tag via the API. This works for both public and
+        # PRIVATE action repos (the public releases/download/ URL 404s on
+        # private), and returns the per-asset ids we download below.
+        if rel="$(curl -fsSL "${auth[@]}" -H "Accept: application/vnd.github+json" \
+                   -H "X-GitHub-Api-Version: 2022-11-28" \
+                   "${API}/releases/tags/${VERSION}")"; then
+          command -v jq >/dev/null 2>&1 || { echo "::error::jq is required to parse the release API"; exit 1; }
+          asset_id="$(printf '%s' "$rel" | jq -r --arg n "$TARBALL"        '.assets[]|select(.name==$n)|.id' | head -n1)"
+          sha_id="$(printf '%s' "$rel"   | jq -r --arg n "$TARBALL.sha256" '.assets[]|select(.name==$n)|.id' | head -n1)"
+          if [ -n "$asset_id" ] && [ "$asset_id" != "null" ] && [ -n "$sha_id" ] && [ "$sha_id" != "null" ]; then
+            # Asset downloads need Accept: application/octet-stream on the asset
+            # endpoint (not the browser_download_url, which isn't auth-friendly).
+            curl -fsSL "${auth[@]}" -H "Accept: application/octet-stream" "${API}/releases/assets/${asset_id}" -o "/tmp/${TARBALL}"
+            curl -fsSL "${auth[@]}" -H "Accept: application/octet-stream" "${API}/releases/assets/${sha_id}"   -o "/tmp/${TARBALL}.sha256"
+            # Verify the published checksum before extracting/executing anything.
+            ( cd /tmp && sha256sum -c "${TARBALL}.sha256" )
+            tar -xzf "/tmp/${TARBALL}" -C "$DEST"
+            chmod +x "$DEST/slop-gate"
+            echo "installed slop-gate ${VERSION} from release asset"
+            exit 0
+          fi
+          echo "::notice::release ${VERSION} has no musl asset; building from source"
+        else
+          echo "::notice::release ${VERSION} not found (or unreadable); building from source"
+        fi
+
+        # Source-build fallback. For a private action repo the git fetch needs
+        # auth too; use an insteadOf rewrite scoped to only ACTION_REPO so the
+        # token never reaches cargo's printed URL or unrelated dependencies.
+        # The workspace gitignores Cargo.lock, so no --locked.
+        if [ -n "${RELEASE_TOKEN}" ]; then
+          git config --global url."https://x-access-token:${RELEASE_TOKEN}@github.com/${ACTION_REPO}.git".insteadOf "https://github.com/${ACTION_REPO}.git"
+          trap 'git config --global --unset url."https://x-access-token:${RELEASE_TOKEN}@github.com/${ACTION_REPO}.git".insteadOf 2>/dev/null || true' EXIT
+        fi
+        cargo install --git "https://github.com/${ACTION_REPO}.git" mergestro-gate --bin slop-gate --tag "$VERSION"
+
+    - name: Set up Python (for cosmic-ray mutation of changed .py)
+      if: ${{ inputs.enable-python == 'true' }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install cosmic-ray
+      if: ${{ inputs.enable-python == 'true' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        python -m pip install --upgrade pip
+        python -m pip install "cosmic-ray==${{ inputs.cosmic-ray-version }}"
+
+    - name: Resolve merge-base
+      id: base
+      shell: bash
+      env:
+        INPUT_BASE: ${{ inputs.base-ref }}
+        PR_BASE: ${{ github.base_ref }}
+      run: |
+        set -euo pipefail
+        BASE="${INPUT_BASE:-$PR_BASE}"
+        if [ -z "$BASE" ]; then
+          echo "::error::no base ref (set base-ref, or run on pull_request)"; exit 1
+        fi
+        git fetch --no-tags --depth=2147483647 origin "$BASE" >/dev/null 2>&1 || true
+        MB="$(git merge-base "origin/${BASE}" HEAD || git merge-base "$BASE" HEAD)"
+        echo "merge_base=$MB" >> "$GITHUB_OUTPUT"
+        echo "Diffing against merge-base $MB (of $BASE)"
+
+    - name: Run slop gate
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token != '' && inputs.token || github.token }}
+        MERGE_BASE: ${{ steps.base.outputs.merge_base }}
+        # The true PR head (GITHUB_SHA is the merge commit) — sharpens the
+        # per-PR survivor tracking in the validation telemetry.
+        PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: |
+        set -euo pipefail
+        args=( --repo . --base "$MERGE_BASE" --head HEAD
+               --jobs "${{ inputs.jobs }}"
+               --timeout "${{ inputs.timeout }}"
+               --max-per-function "${{ inputs.max-per-function }}"
+               --max-survivors "${{ inputs.max-survivors }}" )
+        [ "${{ inputs.config }}" != "" ] && args+=( --config "${{ inputs.config }}" )
+        [ "${{ inputs.advisory }}" = "true" ] && args+=( --advisory )
+        [ "${{ inputs.block-on-zero-assertion }}" = "true" ] && args+=( --block-on-zero-assertion )
+        [ "${{ inputs.block-on-severity }}" != "" ] && args+=( --block-on-severity "${{ inputs.block-on-severity }}" )
+        [ "${{ inputs.debt-budget }}" != "" ] && args+=( --debt-budget "${{ inputs.debt-budget }}" )
+        [ "${{ inputs.block-on-debt }}" = "true" ] && args+=( --block-on-debt )
+        [ "${{ inputs.test-changed-package-only }}" = "true" ] && args+=( --test-changed-package-only )
+        [ "${{ inputs.test-tool }}" != "" ] && args+=( --test-tool "${{ inputs.test-tool }}" )
+        [ "${{ inputs.block-on-pattern }}" != "" ] && args+=( --block-on-pattern "${{ inputs.block-on-pattern }}" )
+        [ "${{ inputs.comment }}" = "true" ] && args+=( --comment )
+        [ "${{ inputs.metrics-file }}" != "" ] && args+=( --metrics-file "${{ inputs.metrics-file }}" )
+        slop-gate "${args[@]}"

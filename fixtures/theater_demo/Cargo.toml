@@ -1,0 +1,10 @@
+# Standalone fixture crate — an empty [workspace] table detaches it from the
+# parent workspace so `cargo mutants` can resolve and build it in isolation.
+[workspace]
+
+[package]
+name = "theater_demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]

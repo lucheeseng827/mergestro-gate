@@ -1,0 +1,37 @@
+# Closed-environment harness image for the Slop Filter behavioral merge gate.
+#
+# This stage needs network access (to fetch crates and build cargo-mutants +
+# slop-gate). The *gate run itself* is executed offline — see podman-compose.yml,
+# which starts the container with `network_mode: none`. cargo-mutants compiles
+# and tests the demo crate, which has zero dependencies, so the gate runs fully
+# closed once the image is built.
+#
+# Build context is the mergestro-gate crate directory (one level up); see
+# podman-compose.yml.
+FROM rust:1-bookworm
+
+# git is needed for the merge-base/diff setup; cargo-mutants is the mutation
+# engine the gate shells out to.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Mutation engine. (Canonical install, matching the GitHub Action. No --locked:
+# the workspace gitignores Cargo.lock.)
+RUN cargo install cargo-mutants
+
+# Build and install the gate binary from the copied crate source. Only the
+# crate's manifest + sources are copied, so it resolves as a standalone package
+# (no parent workspace) and `target/` never enters the image.
+WORKDIR /opt/slop-gate
+COPY Cargo.toml ./
+COPY src ./src
+RUN cargo install --path . --bin slop-gate && rm -rf /opt/slop-gate
+
+# The demo fixture and the scenario driver.
+COPY fixtures /opt/fixtures-template
+COPY test-harness/entrypoint.sh /usr/local/bin/slop-gate-demo
+RUN chmod +x /usr/local/bin/slop-gate-demo
+
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/slop-gate-demo"]
