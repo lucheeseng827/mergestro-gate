@@ -131,7 +131,7 @@ line). Leave `release-token` unset for a public action repo. If you gate the
 source in CI instead (see §6).
 
 ```yaml
-      - uses: your-org/private-rust-project/.@slop-gate-v0.4.0
+      - uses: your-org/private-rust-project/.@v0.1.0
         with:
           release-token: ${{ secrets.SLOP_GATE_READ_TOKEN }}   # read access to the action repo
           max-survivors: "0"

@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0       # full history — the merge-base needs it
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2          # warm target/ across runs (big win)
-      - uses: lucheeseng827/mergestro-gate@slop-gate-v0.4.0
+      - uses: lucheeseng827/mergestro-gate@v0.1.0
         with:
           max-survivors: "0"   # any survivor blocks
           comment: "true"
@@ -69,7 +69,7 @@ runs the gate.
 | `config` | _(unset)_ | Path to a `slop-gate.yaml` config file (CLI inputs override it). |
 | `metrics-file` | _(unset)_ | Append a JSON-Lines validation record (Phase 3 telemetry). |
 | `comment` | `true` | Post / update the idempotent PR comment. |
-| `version` | `slop-gate-v0.4.0` | Release tag of the prebuilt binary to install. |
+| `version` | `v0.1.0` | Release tag of the prebuilt binary to install. |
 | `token` | `GITHUB_TOKEN` | Token used to post the PR comment. |
 | `release-token` | _(unset)_ | Read-scoped PAT/App token to fetch the binary when the **action repo is private** — see [Private](#private-action-repo). |
 
@@ -101,7 +101,7 @@ authenticated GitHub asset API. The consumer repo's default `GITHUB_TOKEN` canno
 read a **different** private repo, so pass a read-scoped PAT or GitHub App token:
 
 ```yaml
-      - uses: your-org/private-rust-project/.@slop-gate-v0.4.0
+      - uses: your-org/private-rust-project/.@v0.1.0
         with:
           release-token: ${{ secrets.SLOP_GATE_READ_TOKEN }}   # read access to the action repo
           max-survivors: "0"
@@ -136,7 +136,7 @@ private-builds note in [`GUIDE.md`](./GUIDE.md) for the full topology table.
 
 ## Pinning
 
-Pin to a **release tag** (`@slop-gate-v0.4.0`) or a commit SHA, not `@main`, so a
+Pin to a **release tag** (`@v0.1.0`) or a commit SHA, not `@main`, so a
 consumer doesn't pick up breaking changes unexpectedly. Bump the tag (and the
 `version` input, if you set it explicitly) together.
 

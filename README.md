@@ -339,7 +339,7 @@ jobs:
         with: { fetch-depth: 0 }   # full history for the merge-base
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: lucheeseng827/mergestro-gate@main
+      - uses: lucheeseng827/mergestro-gate@v1
         with:
           max-survivors: "0"            # any survivor blocks
           block-on-severity: "high"     # Phase 4: also block on a high/critical survivor

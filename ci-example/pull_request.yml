@@ -30,7 +30,7 @@ jobs:
       - name: Slop Filter behavioral gate
         # Pin to a released tag (or a commit SHA) rather than @main so consumers
         # don't pick up breaking changes unexpectedly.
-        uses: lucheeseng827/mergestro-gate@slop-gate-v0.2.0
+        uses: lucheeseng827/mergestro-gate@v1
         with:
           max-survivors: "0"
           max-per-function: "5"
