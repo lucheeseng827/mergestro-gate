@@ -38,6 +38,18 @@ still deferred — cosmic-ray has no pre-exec mutant selection).
 
 Three ways to run it — fastest first. Full detail is linked from each.
 
+### Which should I use?
+
+| Your setup | Use | Why |
+| ---------- | --- | --- |
+| **GitHub Actions** | the **Action** (§1) | Pulls a ~5 MB static binary onto a runner that already has the Rust toolchain. No image to pull. The primary, fastest path. |
+| **GitLab CI / Jenkins / other CI** | the **Docker image** (`mancube/mergestro-gate`) | Toolchain + `cargo-mutants` baked in, so the gate runs with zero setup. See [`ci-example/gitlab-ci.yml`](./ci-example/gitlab-ci.yml). ~300 MB pull. |
+| **Local / one-off** | the **CLI** (§2) or the image | Build the binary once, or `docker run` the image against a checkout. |
+
+The image is intentionally large — it carries the Rust toolchain because the
+behavioral gate compiles + tests each mutant at run time. On GitHub, prefer the
+Action and skip the pull entirely.
+
 ### 1. Add it to CI (recommended)
 
 Drop the gate into `pull_request` as a status check, **advisory first**:

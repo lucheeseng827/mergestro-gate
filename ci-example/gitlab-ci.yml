@@ -1,0 +1,42 @@
+# GitLab CI example — behavioral merge gate via the Docker image.
+#
+# Copy into your repo's `.gitlab-ci.yml` (or `include:` it). Runs on merge
+# request pipelines. The image (mancube/mergestro-gate) bakes in the Rust
+# toolchain + cargo-mutants, so the gate runs with zero setup — no rustup step.
+#
+# A blocked verdict exits non-zero and fails this job. Start advisory
+# (`allow_failure: true` below) for ~a dozen MRs, confirm the survivors are
+# real, then make it blocking by removing allow_failure.
+
+stages:
+  - test
+
+behavioral-gate:
+  stage: test
+  image:
+    name: mancube/mergestro-gate:0.1.0
+    # Reset slop-gate's entrypoint so GitLab can run the script below in a shell
+    # (the image's Alpine base provides /bin/sh). slop-gate is on PATH.
+    entrypoint: [""]
+  # Only on merge request pipelines (where a target branch exists to diff).
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    # Full history so the merge-base against the target branch resolves
+    # (GitLab shallow-clones by default).
+    GIT_DEPTH: "0"
+  script:
+    # Make the target branch available locally for the diff.
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - |
+      slop-gate \
+        --repo . \
+        --base "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME" \
+        --max-survivors 0 \
+        --max-per-function 5 \
+        --jobs 4
+        # --advisory                      # report without blocking
+        # --block-on-zero-assertion       # also gate assertion-free tests
+        # --block-on-pattern security      # gate the security lane too
+  # Advisory rollout: keep this while you validate, then remove to block merges.
+  allow_failure: true
