@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0       # full history — the merge-base needs it
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2          # warm target/ across runs (big win)
-      - uses: lucheeseng827/mergestro-gate@v0.1.0
+      - uses: lucheeseng827/mergestro-gate@v1
         with:
           max-survivors: "0"   # any survivor blocks
           comment: "true"
@@ -101,9 +101,9 @@ authenticated GitHub asset API. The consumer repo's default `GITHUB_TOKEN` canno
 read a **different** private repo, so pass a read-scoped PAT or GitHub App token:
 
 ```yaml
-      - uses: your-org/private-rust-project/.@v0.1.0
+      - uses: your-org/mergestro-gate@v1
         with:
-          release-token: ${{ secrets.SLOP_GATE_READ_TOKEN }}   # read access to the action repo
+          release-token: ${{ secrets.MERGESTRO_GATE_READ_TOKEN }}   # read access to the action repo
           max-survivors: "0"
 ```
 
@@ -111,10 +111,10 @@ read a **different** private repo, so pass a read-scoped PAT or GitHub App token
 authenticates the source-build fallback (via a git `insteadOf` rewrite, so it never
 appears in a log line). Leave it unset for a public action repo.
 
-Publishing the binary: tag `slop-gate-v*` in the action repo to trigger
-[`slop-gate-release.yml`](../../../.github/workflows/slop-gate-release.yml), which
-builds the static musl binary + `.sha256` and attaches them to the release. Keep
-the release (and repo) private; the Action downloads via the asset API regardless.
+Publishing the binary: tag `v*` in the action repo to trigger
+[`release.yml`](.github/workflows/release.yml), which builds the static musl
+binary + `.sha256` and attaches them to the release. Keep the release (and repo)
+private; the Action downloads via the asset API regardless.
 
 ## Same-repo (no Action needed)
 
@@ -136,9 +136,9 @@ private-builds note in [`GUIDE.md`](./GUIDE.md) for the full topology table.
 
 ## Pinning
 
-Pin to a **release tag** (`@v0.1.0`) or a commit SHA, not `@main`, so a
-consumer doesn't pick up breaking changes unexpectedly. Bump the tag (and the
-`version` input, if you set it explicitly) together.
+Pin to the major tag (`@v1`), a release tag (`@v0.1.0`), or a commit SHA — not
+`@main` — so a consumer doesn't pick up breaking changes unexpectedly. Bump the
+tag (and the `version` input, if you set it explicitly) together.
 
 ## Troubleshooting
 

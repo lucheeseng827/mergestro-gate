@@ -1,4 +1,4 @@
-# mergestro-gate — Slop Filter (Behavioral Merge Gate)
+# Mergestro Gate — Behavioral Merge Gate
 
 A **behavioral merge gate** for AI-generated code: instead of statically
 reviewing a PR a human opens, it gates the code an agent writes — by *running*
@@ -349,7 +349,7 @@ jobs:
 
 The action resolves the merge-base with `git merge-base` and passes it to the
 gate; it installs a prebuilt static **musl** binary from the
-[release](../../../.github/workflows/slop-gate-release.yml) (building from source
+[release](.github/workflows/release.yml) (building from source
 only if the release is missing), so cold start stays fast. Make the check
 **required** in branch protection to actually block merges.
 

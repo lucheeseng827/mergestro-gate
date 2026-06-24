@@ -1,8 +1,8 @@
-name: "Slop Filter behavioral gate"
+name: "Mergestro Gate"
 description: >-
-  Differential mutation gate for Rust PRs. Surfaces survivors the test suite
-  passed over on the changed surface, flags assertion-free tests, and blocks the
-  merge when they exceed budget. Posts an idempotent PR comment.
+  Behavioral merge gate for AI-generated code. Mutation-tests your PR's diff to
+  surface lines the suite passes over, flags assertion-free tests, and runs slop
+  / security / convention checks. Blocks the merge past budget; posts a PR comment.
 author: "lucheeseng827"
 branding:
   icon: "filter"
