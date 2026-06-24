@@ -96,7 +96,7 @@ inputs:
   version:
     description: "Release tag of the prebuilt slop-gate binary to install."
     required: false
-    default: "v0.1.0"
+    default: "v0.1.1"
   token:
     description: "GitHub token used to post the PR comment."
     required: false

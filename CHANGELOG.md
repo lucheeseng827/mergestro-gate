@@ -4,7 +4,10 @@ All notable changes to Mergestro Gate (`slop-gate`) are documented here. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
 project aims to follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.1] - 2026-06-24
+
+First public release. (Supersedes the `v0.1.0` tag, which was consumed during
+setup and not published to the Marketplace.)
 
 ### Added
 - Behavioral merge gate: diff-scoped mutation testing with a blocking verdict,
@@ -21,4 +24,4 @@ project aims to follow [Semantic Versioning](https://semver.org/).
   default, `--baseline skip` on `--skip-preflight`, `--test-tool nextest`.
 - Composite GitHub Action with public + authenticated-private binary fetch.
 
-> Pre-1.0: interfaces may change. The first tagged release will start this log.
+> Pre-1.0: interfaces may change.

@@ -69,7 +69,7 @@ runs the gate.
 | `config` | _(unset)_ | Path to a `slop-gate.yaml` config file (CLI inputs override it). |
 | `metrics-file` | _(unset)_ | Append a JSON-Lines validation record (Phase 3 telemetry). |
 | `comment` | `true` | Post / update the idempotent PR comment. |
-| `version` | `v0.1.0` | Release tag of the prebuilt binary to install. |
+| `version` | `v0.1.1` | Release tag of the prebuilt binary to install. |
 | `token` | `GITHUB_TOKEN` | Token used to post the PR comment. |
 | `release-token` | _(unset)_ | Read-scoped PAT/App token to fetch the binary when the **action repo is private** — see [Private](#private-action-repo). |
 
@@ -136,7 +136,7 @@ private-builds note in [`GUIDE.md`](./GUIDE.md) for the full topology table.
 
 ## Pinning
 
-Pin to the major tag (`@v1`), a release tag (`@v0.1.0`), or a commit SHA — not
+Pin to the major tag (`@v1`), a release tag (`@v0.1.1`), or a commit SHA — not
 `@main` — so a consumer doesn't pick up breaking changes unexpectedly. Bump the
 tag (and the `version` input, if you set it explicitly) together.
 
