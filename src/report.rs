@@ -493,7 +493,10 @@ impl GateReport {
                 ));
                 out.push_str("| Rule | File | Detail |\n| --- | --- | --- |\n");
                 for f in &docs.findings {
-                    out.push_str(&format!("| `{}` | `{}` | {} |\n", f.rule, f.file, f.message));
+                    out.push_str(&format!(
+                        "| `{}` | `{}` | {} |\n",
+                        f.rule, f.file, f.message
+                    ));
                 }
                 out.push('\n');
             }
