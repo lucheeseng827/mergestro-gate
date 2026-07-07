@@ -78,6 +78,21 @@ inputs:
     description: "Append a JSON-Lines validation record to this file (Phase 3)."
     required: false
     default: ""
+  metrics-url:
+    description: >-
+      POST the run's telemetry to a Mergestro `/v1/ingest` URL so the hosted fleet
+      views (retention, disable-rate, fix-vs-override) see this run. Best-effort and
+      time-bounded — a slow or unreachable endpoint logs a warning and never fails the
+      gate. Leave empty to skip upload.
+    required: false
+    default: ""
+  metrics-token:
+    description: >-
+      Bearer token for the Mergestro tenant, sent as `Authorization: Bearer <token>`
+      on the metrics-url POST. Pass a secret; it is masked in logs. Required when
+      metrics-url points at an authenticated Mergestro instance.
+    required: false
+    default: ""
   enable-python:
     description: >-
       Install Python + cosmic-ray so changed `.py` files are mutation-tested
@@ -96,7 +111,7 @@ inputs:
   version:
     description: "Release tag of the prebuilt slop-gate binary to install."
     required: false
-    default: "v0.1.1"
+    default: "v0.5.0"
   token:
     description: "GitHub token used to post the PR comment."
     required: false
@@ -231,8 +246,13 @@ runs:
         # The true PR head (GITHUB_SHA is the merge commit) — sharpens the
         # per-PR survivor tracking in the validation telemetry.
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # Read by slop-gate's emitter as the Bearer token for the metrics-url POST.
+        METRICS_TOKEN: ${{ inputs.metrics-token }}
       run: |
         set -euo pipefail
+        # Keep the ingest token out of any log line. Explicit `if` (not `[ ... ] && echo`) so the
+        # empty-token case can never interact with `set -e`.
+        if [ -n "${METRICS_TOKEN}" ]; then echo "::add-mask::${METRICS_TOKEN}"; fi
         args=( --repo . --base "$MERGE_BASE" --head HEAD
                --jobs "${{ inputs.jobs }}"
                --timeout "${{ inputs.timeout }}"
@@ -249,4 +269,5 @@ runs:
         [ "${{ inputs.block-on-pattern }}" != "" ] && args+=( --block-on-pattern "${{ inputs.block-on-pattern }}" )
         [ "${{ inputs.comment }}" = "true" ] && args+=( --comment )
         [ "${{ inputs.metrics-file }}" != "" ] && args+=( --metrics-file "${{ inputs.metrics-file }}" )
+        [ "${{ inputs.metrics-url }}" != "" ] && args+=( --metrics-url "${{ inputs.metrics-url }}" )
         slop-gate "${args[@]}"

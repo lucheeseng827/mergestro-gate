@@ -35,12 +35,27 @@ use crate::severity::SeverityCounts;
 /// (`slop_score`, `slop_findings`); to 4 with the security lane
 /// (`security_score`, `security_findings`). All additions default on read, so
 /// older records still parse; to 5 with the convention lane
-/// (`convention_score`, `convention_findings`).
-pub const SCHEMA_VERSION: u32 = 5;
+/// (`convention_score`, `convention_findings`); to 6 with the `record_type`
+/// ingest discriminator (always `"slop"`), so an emitted line drops straight
+/// into Mergestro's `IngestRecord::Slop` envelope.
+pub const SCHEMA_VERSION: u32 = 6;
+
+/// The `record_type` tag every gate record carries. A free fn so it can name the
+/// `#[serde(default = ...)]` for records written before v6 (which had no tag).
+fn default_record_type() -> String {
+    "slop".to_string()
+}
 
 /// One run's worth of validation telemetry.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunMetrics {
+    /// Discriminator for Mergestro's ingest envelope ([`records.rs::IngestRecord`] on the control
+    /// plane), always `"slop"` — mirrors the `"queue"` tag Mergestro Queue's `QueueRunMetrics` carries.
+    /// It makes a line emitted here parse directly into `IngestRecord::Slop` at `/v1/ingest`; the
+    /// EE ignores the extra gate-only fields below. `#[serde(default)]` keeps pre-v6 local records
+    /// (written without the tag) parsing when [`crate::analyze`] reads them back.
+    #[serde(default = "default_record_type")]
+    pub record_type: String,
     pub schema_version: u32,
     pub gate_version: String,
     /// Seconds since the Unix epoch.
@@ -121,6 +136,7 @@ impl RunMetrics {
             Verdict::Block { reasons } => ("block".to_string(), reasons.clone()),
         };
         RunMetrics {
+            record_type: default_record_type(),
             schema_version: SCHEMA_VERSION,
             gate_version: env!("CARGO_PKG_VERSION").to_string(),
             timestamp_unix: ctx.timestamp_unix,
@@ -217,9 +233,17 @@ pub fn append_jsonl(path: &Path, metrics: &RunMetrics) -> Result<()> {
     Ok(())
 }
 
+/// The connect/read/write timeout applied to the metrics POST. Bounded so a slow or unreachable
+/// Mergestro `/v1/ingest` can never hang a customer's CI (mirrors Mergestro Queue's emitter).
+pub const METRICS_POST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// POST a run record to a telemetry endpoint (best-effort; small + synchronous).
 pub fn post(url: &str, token: Option<&str>, metrics: &RunMetrics) -> Result<()> {
-    let agent = ureq::AgentBuilder::new().build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(METRICS_POST_TIMEOUT)
+        .timeout_read(METRICS_POST_TIMEOUT)
+        .timeout_write(METRICS_POST_TIMEOUT)
+        .build();
     let mut req = agent
         .post(url)
         .set("Content-Type", "application/json")
@@ -348,6 +372,35 @@ mod tests {
         assert!(!line.contains('\n'));
         let back: RunMetrics = serde_json::from_str(&line).unwrap();
         assert_eq!(back, m);
+    }
+
+    #[test]
+    fn record_carries_slop_ingest_discriminator() {
+        // The line the gate emits must drop straight into Mergestro's ingest envelope:
+        // `records.rs::IngestRecord` is internally tagged on `record_type`, so a missing/other tag
+        // makes `/v1/ingest` reject the upload with "missing field `record_type`". Keep this in
+        // lockstep with the EE-side contract test in `ee/mergestro/src/records.rs`
+        // (`gate_wire_line_parses_into_slop_ingest_record`).
+        let report = GateReport::new("base", "head");
+        let m = RunMetrics::from_report(&report, &Config::default(), &RunContext::default());
+        assert_eq!(m.record_type, "slop");
+        let line = m.to_json_line();
+        assert!(
+            line.contains("\"record_type\":\"slop\""),
+            "emitted line must carry the slop discriminator: {line}"
+        );
+    }
+
+    #[test]
+    fn pre_v6_record_without_record_type_still_parses() {
+        // A v5 line (no `record_type`) written before this field existed must still deserialize so
+        // `crate::analyze` can read historical local telemetry; the tag defaults to "slop".
+        let v5 = r#"{"schema_version":5,"gate_version":"0.4.0","timestamp_unix":1,
+            "mode":"blocking","verdict":"pass","block_reasons":[],"changed_rust_files":0,
+            "candidates":0,"capped_out":0,"tested":0,"caught":0,"survivors":0,"timed_out":0,
+            "unviable":0,"survivor_fingerprints":[],"zero_assertion_tests":0,"duration_secs":0.0}"#;
+        let m: RunMetrics = serde_json::from_str(v5).unwrap();
+        assert_eq!(m.record_type, "slop");
     }
 
     #[test]

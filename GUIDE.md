@@ -131,7 +131,7 @@ line). Leave `release-token` unset for a public action repo. If you gate the
 source in CI instead (see §6).
 
 ```yaml
-      - uses: your-org/private-rust-project/.@v0.1.1
+      - uses: your-org/private-rust-project/.@v0.5.0
         with:
           release-token: ${{ secrets.SLOP_GATE_READ_TOKEN }}   # read access to the action repo
           max-survivors: "0"
@@ -252,15 +252,18 @@ the repo private; nothing is pushed outward.
 
 ```bash
 cargo install cargo-mutants                       # the mutation engine
-cargo build --release                # binary: target/release/slop-gate
+cargo build --release           # binary: target/release/slop-gate
 ```
 
-> **Platform:** run the mutation step on **Linux** (the GitHub Action uses
-> `ubuntu-latest`). On **Windows**, `cargo-mutants` currently fails with a
-> recursive temp-path error (it nests its build directory past `MAX_PATH`), so
-> the mutation step can't complete. The rest of the gate (diff, zero-assertion,
-> debt-delta, `analyze`) works on any platform; for an end-to-end Windows run use
-> the closed-environment container — see [Test it in a closed environment](#test-it-in-a-closed-environment-first).
+> **Platform:** the gate runs on **Linux, macOS and Windows**. The CI Action
+> uses `ubuntu-latest`; local runs work on all three (verified end-to-end on
+> Windows with `cargo-mutants` ≥ 27.1, which fixed an older temp-path bug that
+> nested the build dir past `MAX_PATH`). If you are on an **older cargo-mutants**
+> *and* a very deep repo path and the mutation step fails with a path-length
+> error, either upgrade `cargo-mutants`, move the repo nearer the drive root, or
+> run the end-to-end [closed-environment container](#test-it-in-a-closed-environment-first).
+> The non-mutation signals (diff, zero-assertion, debt-delta, `analyze`,
+> `estimate`) are pure and work on any platform regardless of version.
 
 ### Run it on your branch before pushing
 
@@ -275,12 +278,70 @@ slop-gate --base origin/main --advisory
 slop-gate --base origin/main --skip-preflight
 ```
 
-A natural pre-push hook (`.git/hooks/pre-push`):
+### Wire it as a git hook (all platforms)
+
+**Use `pre-push`, not `pre-commit`.** The gate diffs two *committed* refs
+(`--base`…`--head`); it has no staged/index mode. At `pre-commit` time your
+change is only staged, so the hook would mutate the previous commit's diff and
+miss what you are committing. At `pre-push` time every commit exists and
+`origin/main…HEAD` is exactly what would ship — the correct surface to gate.
+
+The hook body is identical on macOS, Linux and Windows — git runs
+`.git/hooks/pre-push` through its bundled POSIX shell (Git Bash on Windows), so a
+`bash` shebang works everywhere. Only the install command differs.
+
+`.git/hooks/pre-push`:
 
 ```bash
 #!/usr/bin/env bash
-slop-gate --base origin/main --advisory || true   # advisory locally; CI enforces
+# Advisory: reports survivors, never blocks the push (CI enforces).
+slop-gate --base origin/main --advisory || true
+
+# Blocking instead? Drop `--advisory` and the `|| true`; exit 2 aborts the push:
+# slop-gate --base origin/main --head HEAD
 ```
+
+**Install — macOS / Linux:**
+
+```bash
+cat > .git/hooks/pre-push <<'EOF'
+#!/usr/bin/env bash
+slop-gate --base origin/main --advisory || true
+EOF
+chmod +x .git/hooks/pre-push
+```
+
+**Install — Windows (PowerShell):**
+
+```powershell
+# Git for Windows runs the hook via its bundled bash; the shebang handles the rest.
+# Write LF line endings — a CRLF shebang breaks with `/usr/bin/env: 'bash\r'`.
+$hook = "#!/usr/bin/env bash`nslop-gate --base origin/main --advisory || true`n"
+[IO.File]::WriteAllText(".git/hooks/pre-push", $hook)
+```
+
+> **Windows line-ending trap:** anything that writes the hook must emit **LF**,
+> not CRLF. A `\r` in the shebang makes git fail the push with
+> `/usr/bin/env: 'bash\r': No such file or directory`. The PowerShell snippet
+> above (and any editor set to LF) avoids it; `git config core.autocrlf` does
+> **not** touch files under `.git/hooks`.
+
+To share the hook across a team, commit it under a tracked dir (e.g.
+`.githooks/pre-push`) and point git at it once — same command on every platform:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+> A committed hook can't be named `*.sh` — git only invokes a `hooksPath` hook
+> named exactly `pre-push`, no extension — so it falls outside the `*.sh` LF
+> rule above. Add it to `.gitattributes` explicitly, or the same CRLF-shebang
+> trap comes back the moment someone checks it out on Windows:
+> ```
+> .githooks/pre-push text eol=lf
+> ```
+
+Bypass a single push when you must: `git push --no-verify`.
 
 ### Predict the cost first — `estimate` (dry run)
 

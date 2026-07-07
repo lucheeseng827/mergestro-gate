@@ -214,6 +214,18 @@ fn render_change(
                 changed_jvm_files.push(FileChange { path, added_lines });
             }
         }
+    } else if crate::docs_gate::is_doc_file(&path) {
+        // Not scoped to any language's mutant runner, but the docs pattern
+        // lane (docs_gate::scan) derives *every* changed path from this same
+        // unified text — without this branch, doc files never appear in it,
+        // so `docs_touched` can never go true and docs-stale-config/-api
+        // false-fire even when the doc was updated in the same diff.
+        if let Some(body) = unified_body(&old, &new)? {
+            unified.push_str(&format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
+            ));
+            unified.push_str(&body);
+        }
     }
     Ok(())
 }
@@ -467,5 +479,40 @@ mod tests {
         assert_eq!(js, vec!["calc.js"], "the changed .js file must be recorded");
         assert!(!scope.changed_python_files[0].added_lines.is_empty());
         assert!(!scope.changed_js_files[0].added_lines.is_empty());
+    }
+
+    #[test]
+    fn compute_scope_includes_doc_file_paths_in_the_unified_diff() {
+        // docs_gate::scan derives every changed path (its `docs_touched` flag
+        // included) from this same unified text — a doc file that changed
+        // must show up as a `+++ b/` path, or the docs-drift checks can never
+        // see that the doc moved with the code.
+        //
+        // Built inline (rather than via `scope_for_change`) so the `TempDir`
+        // guard stays alive while we read `changed.diff` back off disk —
+        // `scope_for_change` drops its tempdir before returning, which is
+        // fine for the other tests here since they only inspect the in-memory
+        // `changed_*_files` vecs, never `diff_path`'s contents.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        git(p, &["init", "-q"]);
+        git(p, &["config", "user.email", "t@t.io"]);
+        git(p, &["config", "user.name", "t"]);
+        git(p, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(p.join("config.rs"), "pub fn f() {}\n").unwrap();
+        std::fs::write(p.join("CONFIG.md"), "# Config\n").unwrap();
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-q", "--no-gpg-sign", "-m", "base"]);
+        std::fs::write(p.join("config.rs"), "pub fn f() { let _ = 1; }\n").unwrap();
+        std::fs::write(p.join("CONFIG.md"), "# Config\n\nUpdated.\n").unwrap();
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-q", "--no-gpg-sign", "-m", "head"]);
+
+        let scope = super::compute_scope(p, "HEAD~1", "HEAD", p).unwrap();
+        let diff_text = std::fs::read_to_string(&scope.diff_path).unwrap();
+        assert!(
+            diff_text.contains("+++ b/CONFIG.md"),
+            "the changed doc file must appear in the unified diff text: {diff_text}"
+        );
     }
 }

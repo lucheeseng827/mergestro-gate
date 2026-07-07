@@ -91,10 +91,11 @@ pub fn decide(report: &GateReport, cfg: &Config) -> Verdict {
 /// gate on any finding in that lane, rule ids gate on a matching finding in any
 /// lane.
 fn pattern_block_reasons(report: &GateReport, targets: &[String]) -> Vec<String> {
-    let lanes: [(&str, &Option<PatternReport>); 3] = [
+    let lanes: [(&str, &Option<PatternReport>); 4] = [
         ("slop", &report.slop),
         ("security", &report.security),
         ("convention", &report.convention),
+        ("docs", &report.docs),
     ];
     let mut reasons = Vec::new();
     for target in targets {
@@ -276,6 +277,40 @@ mod tests {
         r.slop = Some(pattern("redundant-wrapper"));
         // No block_on_pattern → pattern findings never gate.
         assert_eq!(decide(&r, &Config::default()), Verdict::Pass);
+    }
+
+    #[test]
+    fn docs_lane_gates_when_targeted() {
+        // The docs lane participates in block_on_pattern exactly like the
+        // other pattern lanes: advisory by default, gating when named.
+        let mut report = GateReport::new("a", "b");
+        report.docs = Some(PatternReport::from_findings(vec![
+            crate::pattern::PatternFinding {
+                rule: "docs-stale-config".into(),
+                file: "mods/x/src/main.rs".into(),
+                line: 0,
+                message: "config surface without doc touch".into(),
+                weight: 15,
+            },
+        ]));
+
+        // Not targeted → advisory.
+        let cfg = Config::default();
+        assert!(!decide(&report, &cfg).is_block());
+
+        // Lane name gates.
+        let cfg = Config {
+            block_on_pattern: vec!["docs".into()],
+            ..Config::default()
+        };
+        assert!(decide(&report, &cfg).is_block());
+
+        // Rule id gates.
+        let cfg = Config {
+            block_on_pattern: vec!["docs-stale-config".into()],
+            ..Config::default()
+        };
+        assert!(decide(&report, &cfg).is_block());
     }
 
     #[test]

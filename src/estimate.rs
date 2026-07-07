@@ -112,7 +112,7 @@ impl Estimate {
     /// Human-readable projection.
     pub fn render_text(&self) -> String {
         let mut s = String::new();
-        s.push_str("── Slop Filter · mutant estimate (dry run, no build) ──\n");
+        s.push_str("── Mergestro Gate · mutant estimate (dry run, no build) ──\n");
         if self.functions.is_empty() {
             s.push_str("no mutable Rust constructs on the changed lines → 0 mutants.\n");
             return s;

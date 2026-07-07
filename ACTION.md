@@ -69,7 +69,7 @@ runs the gate.
 | `config` | _(unset)_ | Path to a `slop-gate.yaml` config file (CLI inputs override it). |
 | `metrics-file` | _(unset)_ | Append a JSON-Lines validation record (Phase 3 telemetry). |
 | `comment` | `true` | Post / update the idempotent PR comment. |
-| `version` | `v0.1.1` | Release tag of the prebuilt binary to install. |
+| `version` | `v0.5.0` | Release tag of the prebuilt binary to install. |
 | `token` | `GITHUB_TOKEN` | Token used to post the PR comment. |
 | `release-token` | _(unset)_ | Read-scoped PAT/App token to fetch the binary when the **action repo is private** — see [Private](#private-action-repo). |
 

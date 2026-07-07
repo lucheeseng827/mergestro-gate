@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! `slop-gate` — CLI for the Slop Filter behavioral merge gate.
+//! `slop-gate` — CLI for the Mergestro Gate behavioral merge gate.
 //!
 //! Default invocation runs the gate: read a diff against the base ref, check the
 //! suite is green & stable, mutation-test the changed surface, run the
@@ -18,13 +18,13 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
-use slop_filter::config::Config;
-use slop_filter::estimate::Estimate;
-use slop_filter::metrics::{self, RunContext, RunMetrics};
-use slop_filter::report::GateReport;
-use slop_filter::runner::RealRunner;
-use slop_filter::severity::Severity;
-use slop_filter::{analyze, diff, github, mutants, pipeline};
+use mergestro_gate::config::Config;
+use mergestro_gate::estimate::Estimate;
+use mergestro_gate::metrics::{self, RunContext, RunMetrics};
+use mergestro_gate::report::GateReport;
+use mergestro_gate::runner::RealRunner;
+use mergestro_gate::severity::Severity;
+use mergestro_gate::{analyze, diff, github, mutants, pipeline};
 
 /// Exit code used when the gate blocks (distinct from operational failure).
 const EXIT_BLOCKED: u8 = 2;
@@ -364,7 +364,8 @@ fn run_estimate(args: &EstimateArgs) -> Result<()> {
     let candidates = if scope.changed_rust_files.is_empty() {
         Vec::new()
     } else {
-        mutants::list_candidates(&runner, &cfg.repo, &scope.diff_path)?
+        let packages = mutants::changed_packages(&cfg.repo, &scope.changed_rust_files);
+        mutants::list_candidates(&runner, &cfg.repo, &scope.diff_path, &packages)?
     };
     let est = Estimate::from_candidates(&candidates, cfg.max_mutants_per_function);
 

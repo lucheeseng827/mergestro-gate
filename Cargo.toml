@@ -1,14 +1,20 @@
+# Mergestro Gate (the slop half of Mergestro). The directory stays `mergestro-gate` (the root workspace
+# globs members by directory, and CI keys on the dir name), but the crate/lib carry the product
+# brand. The bin stays `slop-gate` for CLI/Docker-entrypoint/tarball continuity. See
+# docs/mergestro-ee-rollout.md §1 (naming) and §4 (Phase D).
+# NOTE: keep `name = ` on the line immediately after `[package]` — the .ossync `[workspace]`
+# injection anchors on `[package]\nname = "mergestro-gate"`.
 [workspace]
 
 [package]
 name = "mergestro-gate"
-version = "0.1.1"
+version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
-description = "Slop Filter — behavioral merge gate (Phase 4: blocking differential mutation gate for Rust, with severity ranking, a debt-delta budget, validation telemetry and a trend dashboard)"
+description = "Mergestro Gate — behavioral merge gate (Phase 4: blocking differential mutation gate for Rust, with severity ranking, a debt-delta budget, validation telemetry and a trend dashboard)"
 
 [lib]
-name = "slop_filter"
+name = "mergestro_gate"
 path = "src/lib.rs"
 
 [[bin]]

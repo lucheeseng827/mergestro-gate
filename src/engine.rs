@@ -129,7 +129,10 @@ impl MutationEngine for RustEngine {
         scope: &DiffScope,
         work_dir: &Path,
     ) -> Result<EngineRun> {
-        let candidates = mutants::list_candidates(runner, &cfg.repo, &scope.diff_path)?;
+        // Resolve packages first so list and run use the same --package scope,
+        // keeping their mutant counts in sync (a mismatch is an operational error).
+        let packages = mutants::changed_packages(&cfg.repo, &scope.changed_rust_files);
+        let candidates = mutants::list_candidates(runner, &cfg.repo, &scope.diff_path, &packages)?;
         let enumerated = candidates.len();
         let selection = mutants::apply_cap(candidates, cfg.max_mutants_per_function);
         let kept = selection.kept.len();
@@ -146,9 +149,6 @@ impl MutationEngine for RustEngine {
             });
         }
         let output_dir = mutants::output_dir_for(work_dir);
-        // Scope the run to the changed crate(s) so a workspace doesn't rebuild
-        // and re-test every package per mutant.
-        let packages = mutants::changed_packages(&cfg.repo, &scope.changed_rust_files);
         let results = mutants::run_mutation(
             runner,
             cfg,

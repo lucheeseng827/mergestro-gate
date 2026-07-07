@@ -1,4 +1,4 @@
-# Slop Filter — gate configuration.
+# Mergestro Gate — gate configuration.
 # Every field is optional; omitted fields fall back to the built-in defaults.
 # CLI flags override anything set here.
 

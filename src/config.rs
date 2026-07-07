@@ -85,15 +85,16 @@ pub struct Config {
 
     // ── Track B: pattern lanes (opt-in gating) ───────────────────────────────
     /// Block when a pattern lane flags something. Each entry is a **lane name**
-    /// (`slop` | `security` | `convention` | `all`) or a specific **rule id**
-    /// (e.g. `hardcoded-secret`, `unknown-crate-import`). Empty (the default)
-    /// leaves every pattern lane advisory — it scores and reports, never gates.
+    /// (`slop` | `security` | `convention` | `docs` | `all`) or a specific
+    /// **rule id** (e.g. `hardcoded-secret`, `unknown-crate-import`,
+    /// `docs-stale-config`). Empty (the default) leaves every pattern lane
+    /// advisory — it scores and reports, never gates.
     #[serde(default)]
     pub block_on_pattern: Vec<String>,
 }
 
 /// The recognised pattern-lane names for `block_on_pattern` (besides rule ids).
-pub const PATTERN_LANES: [&str; 4] = ["slop", "security", "convention", "all"];
+pub const PATTERN_LANES: [&str; 5] = ["slop", "security", "convention", "docs", "all"];
 
 impl Default for Config {
     fn default() -> Self {

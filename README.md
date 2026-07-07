@@ -15,6 +15,12 @@ release task list + OSS↔SaaS split is in [`OSS-ROLLOUT.md`](./OSS-ROLLOUT.md).
 gate does and does not do. [`test-harness/`](./test-harness) — run the gate in a
 network-isolated container against a known survivor.
 
+**Reference:** [`docs/CONFIG.md`](./docs/CONFIG.md) — every CLI flag, YAML key,
+Action input and env var in one table. [`docs/API.md`](./docs/API.md) — the
+machine contract: exit codes, report/telemetry JSON schemas, PR-comment format.
+[`docs/OPERATIONS.md`](./docs/OPERATIONS.md) — running it in CI: requirements,
+cache behaviour, budget knobs, symptom-first troubleshooting.
+
 **Status: Phase 4 — Rollout.** An *installable, blocking* gate: a pure-Rust
 (`gix`) diff against the base ref, a blocking verdict wired for branch
 protection, a free zero-assertion test pre-check, and an idempotent PR comment —
@@ -90,6 +96,28 @@ slop-gate --repo . --base origin/main --head HEAD --advisory
 slop-gate --base origin/main --skip-preflight
 ```
 
+What success looks like (a survivor found, advisory mode so exit 0 — in
+blocking mode the same run exits 2):
+
+```text
+── Mergestro Gate · behavioral merge gate ──
+diff:       origin/main...HEAD
+changed:    1 Rust + 0 Python + 0 JS/TS + 0 Go + 0 Java/Kotlin file(s)
+preflight:  green & stable across 2 run(s)
+mutants:    13 candidate(s), 13 tested, 0 capped out
+outcomes:   12 caught · 0 timed out · 0 unviable · 1 SURVIVED
+debt:       net +3 (complexity +2, duplication +0, coupling +1)
+slop:       score 0/100 (0 signature(s))
+runtime:    48.2s
+verdict:    PASS
+
+Survivors — the suite passed over these mutations (most severe first):
+  • [high] src/lib.rs:42:12  replace >= with >
+```
+
+A run with nothing to check short-circuits instead: `changed: no Rust, Python,
+JS/TS, Go or Java/Kotlin files changed — nothing to mutate.` and passes.
+
 > The mutation step requires [`cargo-mutants`](https://mutants.rs) — see [Limitations](#limitations).
 
 ### 3. Predict the cost first — `estimate` (no build)
@@ -107,7 +135,9 @@ slop-gate estimate --base origin/main --head HEAD     # add --json for CI
   `--test-tool nextest`, `--skip-preflight`, lower `max-per-function`, a bigger
   runner. Full ROI-ordered list in **[`GUIDE.md`](./GUIDE.md) §5**.
 - **Common errors** (no merge-base, engine missing, slow runs, Windows) — the
-  troubleshooting table in **[`ACTION.md`](./ACTION.md)**.
+  troubleshooting tables in **[`ACTION.md`](./ACTION.md)** and
+  **[`docs/OPERATIONS.md`](./docs/OPERATIONS.md)** (symptom-first, with the
+  degraded modes).
 - **Cost model** — [`BENCHMARK.md`](./BENCHMARK.md): >90% of wall-clock is the
   per-mutant compile-and-test; the orchestrator is ~11 ms.
 
@@ -163,6 +193,7 @@ verdict engine, no fast-forward, no agent feedback loop. Those are GA pieces.
 
 ```mermaid
 sequenceDiagram
+    autonumber
     participant Agent as AI Agent
     participant GH as GitHub
     participant GW as Gate webhook, axum
@@ -253,7 +284,7 @@ engines, the results are aggregated, and the verdict engine decides pass/block.
 ```mermaid
 flowchart TD
     PR["PR / push"] --> DIFF["gix diff base→head<br/>changed files + lines"]
-    DIFF -->|"no Rust/Python changed"| NOOP["nothing to mutate → PASS"]
+    DIFF -->|"no mutatable language changed"| NOOP["nothing to mutate → PASS"]
     DIFF --> LANES
     DIFF --> ENGINES
 
@@ -262,15 +293,19 @@ flowchart TD
         D["debt-delta<br/>complexity · duplication · coupling"]
         S["slop signatures<br/>syn AST"]
         SEC["security anti-patterns<br/>regex rules"]
+        CONV["hallucinated imports<br/>convention lane"]
     end
 
-    subgraph ENGINES["Mutation engines · diff-scoped"]
+    subgraph ENGINES["Mutation engines · diff-scoped · run in order"]
         R["Rust · cargo-mutants"]
         P["Python · cosmic-ray (PoC)"]
+        J["JS/TS · Stryker (PoC)"]
+        GO["Go · gremlins (PoC)"]
+        JV["Java/Kotlin · PIT (PoC)"]
     end
 
-    ENGINES --> PF{"pre-flight<br/>suite green &amp; stable?"}
-    PF -->|"red / flaky"| SUPP["suppress mutation<br/>survivors can't be trusted"]
+    ENGINES --> PF{"per-engine pre-flight<br/>suite green &amp; stable?"}
+    PF -->|"red / flaky"| SUPP["suppress that engine's mutation<br/>survivors can't be trusted"]
     PF -->|"green / skipped"| MUT["enumerate → cap → run mutants"]
 
     LANES --> AGG["Report<br/>survivors + scores"]
@@ -281,6 +316,54 @@ flowchart TD
     V -->|"otherwise"| PASS["PASS · exit 0"]
     BLK --> OUT["PR comment + JSON telemetry"]
     PASS --> OUT
+```
+
+### Event / call flow — one gate run (as-built)
+
+What actually happens when CI (or you) invokes `slop-gate` — the
+`src/pipeline.rs` orchestration plus the best-effort side effects in
+`src/main.rs`. Static lanes run *before* the pre-flight, so a red suite still
+yields a signal; the PR comment and telemetry are best-effort and never change
+the verdict:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CI as CI job / dev shell
+    participant G as slop-gate
+    participant Git as repo (gix, in-process)
+    participant E as engine (cargo-mutants / cosmic-ray / …)
+    participant GH as GitHub REST
+    participant T as telemetry sink
+
+    CI->>G: slop-gate --base origin/main --head HEAD [flags]
+    G->>G: config = defaults ← YAML ← CLI flags
+    G->>Git: diff base→head (pure Rust, no git binary)
+    Git-->>G: changed files + lines per language
+    break no mutatable language changed
+        G-->>CI: PASS "nothing to mutate" · exit 0
+    end
+    G->>G: static lanes on the diff — debt-delta · slop (syn AST) · security (regex) · convention (hallucinated imports)
+    G->>G: zero-assertion scan on changed Rust tests
+    loop each engine whose language changed (Rust → Python → JS → Go → JVM)
+        G->>E: determinism pre-flight — run the suite N× (skippable via --skip-preflight)
+        alt red / flaky
+            G->>G: suppress this engine's mutation (survivors untrusted)
+        else green
+            G->>E: probe the tool (missing: fatal for Rust, warn+skip for PoC engines)
+            G->>E: enumerate candidates on the diff → per-function cap
+            G->>E: run mutants (--in-diff, --jobs, --timeout)
+            E-->>G: caught / survived / unviable / timed-out
+        end
+    end
+    G->>G: verdict — hard gates block (survivors > budget · severity tier · debt budget · pattern lanes · untrusted suite · zero-assertion if opted in)
+    opt --comment
+        G->>GH: post/update the idempotent PR comment (best-effort)
+    end
+    opt --metrics-file / --metrics-url
+        G->>T: append JSONL / POST run record (best-effort)
+    end
+    G-->>CI: report (text / json / markdown) · exit 0 pass · 2 block · 1 operational failure
 ```
 
 ### How a mutant is detected from a code change
@@ -393,7 +476,8 @@ slop-gate --base origin/main --skip-preflight
 
 All flags also live in a YAML config — see
 [`mergestro-gate.example.yaml`](./mergestro-gate.example.yaml). CLI flags override the
-file; the file overrides the defaults.
+file; the file overrides the defaults. The full knob table (CLI ↔ YAML ↔ Action
+input, with types and defaults) is [`docs/CONFIG.md`](./docs/CONFIG.md).
 
 ### Exit codes
 
@@ -404,7 +488,9 @@ file; the file overrides the defaults.
 | `1`  | Operational failure: couldn't diff, `cargo-mutants` missing, etc. |
 
 The PR comment is best-effort — a token/network hiccup warns but never changes
-the verdict or fails the step on its own.
+the verdict or fails the step on its own. The full machine contract (exact
+block conditions, report JSON schema, telemetry record, comment format) is
+[`docs/API.md`](./docs/API.md).
 
 ## Validation telemetry (Phase 3)
 
@@ -425,7 +511,7 @@ and repo/PR/commit identity. Read it back into the headline KPIs:
 
 ```bash
 slop-gate analyze --metrics-file slop-gate-metrics.jsonl
-# ── Slop Filter · validation & trend summary (Phase 3–4) ──
+# ── Mergestro Gate · validation & trend summary (Phase 3–4) ──
 # runs:       128 across 4 repo(s), 37 PR(s)
 # mode:       120 blocking · 8 advisory
 # block rate: 22% (26 of 120 blocking runs blocked)
@@ -466,7 +552,17 @@ tier regardless of count:
 slop-gate --base origin/main --block-on-severity high
 ```
 
-**Gate a pattern lane (opt-in).** The slop / security / convention lanes are
+**The docs lane — documentation as part of the gate.** When a PR changes a
+module's code, the `docs` lane checks that module against the repo's
+documentation standard (`docs/DOCUMENTATION_STANDARD.md`): README present with
+a quickstart, an as-built mermaid architecture diagram, an event/call
+`sequenceDiagram` — and that the docs *move with the code*: newly added
+configuration surface (clap args, env reads) or HTTP surface (router routes)
+in a module where no doc file was touched is flagged as `docs-stale-config` /
+`docs-stale-api`. Advisory by default; make it a hard gate with
+`--block-on-pattern docs` (or a specific rule id).
+
+**Gate a pattern lane (opt-in).** The slop / security / convention / docs lanes are
 advisory by default; turn any into a hard gate by lane name or specific rule id:
 
 ```bash
@@ -532,6 +628,7 @@ slop-gate --base HEAD~1 --head HEAD
 | `src/slop.rs`          | Pattern lane (Track B): AI-slop signatures via `syn` AST → advisory slop score. |
 | `src/security.rs`      | Pattern lane (Track B): security anti-patterns via diff-scoped regex rules. |
 | `src/convention.rs`    | Pattern lane (Track B): hallucinated-import detection (`use` of an undeclared crate). |
+| `src/docs_gate.rs`     | Pattern lane (Track B): documentation-standard compliance + doc drift (config/API surface added without a doc touch). |
 | `src/github.rs`        | Idempotent PR comment via the GitHub REST API (`ureq`). |
 | `src/report.rs`        | `Mutant`, `Verdict`, `GateReport`; text / JSON / Markdown rendering. |
 | `src/pipeline.rs`      | Orchestration with stage-by-stage short-circuits. |

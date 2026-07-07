@@ -169,6 +169,10 @@ pub struct GateReport {
     /// `None` when nothing was flagged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub convention: Option<PatternReport>,
+    /// Pattern lane: documentation-standard compliance + doc drift on the
+    /// changed modules (advisory). `None` when nothing was flagged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs: Option<PatternReport>,
     /// The gate decision.
     pub verdict: Verdict,
     pub duration_secs: f64,
@@ -198,6 +202,7 @@ impl GateReport {
             slop: None,
             security: None,
             convention: None,
+            docs: None,
             verdict: Verdict::Pass,
             duration_secs: 0.0,
         }
@@ -211,7 +216,7 @@ impl GateReport {
     /// Render the human-readable report for the job log.
     pub fn render_text(&self) -> String {
         let mut out = String::new();
-        out.push_str("── Slop Filter · behavioral merge gate ──\n");
+        out.push_str("── Mergestro Gate · behavioral merge gate ──\n");
         out.push_str(&format!(
             "diff:       {}...{}\n",
             self.base_ref, self.head_ref
@@ -288,6 +293,13 @@ impl GateReport {
                 conv.findings.len()
             ));
         }
+        if let Some(docs) = &self.docs {
+            out.push_str(&format!(
+                "docs:       score {}/100 ({} finding(s))\n",
+                docs.score,
+                docs.findings.len()
+            ));
+        }
         out.push_str(&format!("runtime:    {:.1}s\n", self.duration_secs));
         out.push_str(&format!("verdict:    {}\n", verdict_line(&self.verdict)));
 
@@ -345,6 +357,14 @@ impl GateReport {
                 }
             }
         }
+        if let Some(docs) = &self.docs {
+            if !docs.findings.is_empty() {
+                out.push_str("\nDocumentation standard (advisory):\n");
+                for f in &docs.findings {
+                    out.push_str(&format!("  • [{}] {}  {}\n", f.rule, f.file, f.message));
+                }
+            }
+        }
         out
     }
 
@@ -355,8 +375,8 @@ impl GateReport {
         out.push_str(COMMENT_MARKER);
         out.push('\n');
         let badge = match &self.verdict {
-            Verdict::Pass => "✅ **Slop gate: passed**",
-            Verdict::Block { .. } => "❌ **Slop gate: blocked**",
+            Verdict::Pass => "✅ **Mergestro Gate: passed**",
+            Verdict::Block { .. } => "❌ **Mergestro Gate: blocked**",
         };
         out.push_str(&format!("## {badge}\n\n"));
         out.push_str(&format!(
@@ -465,20 +485,36 @@ impl GateReport {
             }
         }
 
+        if let Some(docs) = &self.docs {
+            if !docs.findings.is_empty() {
+                out.push_str(&format!(
+                    "### Documentation standard (advisory) — score {}/100\n\n",
+                    docs.score
+                ));
+                out.push_str("| Rule | File | Detail |\n| --- | --- | --- |\n");
+                for f in &docs.findings {
+                    out.push_str(&format!("| `{}` | `{}` | {} |\n", f.rule, f.file, f.message));
+                }
+                out.push('\n');
+            }
+        }
+
         let slop_clear = self.slop.as_ref().is_none_or(|s| s.findings.is_empty());
         let security_clear = self.security.as_ref().is_none_or(|s| s.findings.is_empty());
         let convention_clear = self
             .convention
             .as_ref()
             .is_none_or(|s| s.findings.is_empty());
+        let docs_clear = self.docs.as_ref().is_none_or(|s| s.findings.is_empty());
         if self.survivors.is_empty()
             && self.zero_assertion_tests.is_empty()
             && slop_clear
             && security_clear
             && convention_clear
+            && docs_clear
         {
             out.push_str(
-                "No surviving mutations, assertion-free tests, slop signatures, security anti-patterns, or unknown imports on the changed surface.\n",
+                "No surviving mutations, assertion-free tests, slop signatures, security anti-patterns, unknown imports, or documentation-standard findings on the changed surface.\n",
             );
         }
         out
@@ -896,6 +932,89 @@ mod tests {
         assert!(
             !r.render_markdown().contains("No surviving mutations"),
             "clean-run message must not appear when convention findings are present"
+        );
+    }
+
+    fn docs_finding(rule: &str, file: &str) -> PatternFinding {
+        PatternFinding {
+            rule: rule.into(),
+            file: file.into(),
+            line: 0, // module-level findings — see docs_gate::finding
+            message: format!("{rule} detected"),
+            weight: 25,
+        }
+    }
+
+    #[test]
+    fn render_text_shows_docs_summary_line_when_present() {
+        let mut r = GateReport::new("main", "HEAD");
+        r.changed_rust_files = vec!["src/x.rs".into()];
+        r.docs = Some(PatternReport {
+            findings: vec![docs_finding("docs-missing-readme", "mods/example")],
+            score: 40,
+        });
+        let text = r.render_text();
+        assert!(
+            text.contains("docs:"),
+            "render_text must print the docs summary line when the lane ran"
+        );
+        assert!(text.contains("docs-missing-readme"));
+    }
+
+    #[test]
+    fn render_text_omits_docs_section_when_findings_empty() {
+        // docs = Some but findings is empty — the "Documentation standard"
+        // section must not appear. Guards the `!docs.findings.is_empty()` check
+        // in render_text.
+        let mut r = GateReport::new("main", "HEAD");
+        r.changed_rust_files = vec!["src/x.rs".into()];
+        r.docs = Some(PatternReport::default());
+        assert!(
+            !r.render_text().contains("Documentation standard"),
+            "render_text must not print the docs section when findings is empty"
+        );
+    }
+
+    #[test]
+    fn render_markdown_shows_docs_section_when_findings_present() {
+        let mut r = GateReport::new("main", "HEAD");
+        r.changed_rust_files = vec!["src/x.rs".into()];
+        r.docs = Some(PatternReport {
+            findings: vec![docs_finding("docs-missing-readme", "mods/example")],
+            score: 40,
+        });
+        let md = r.render_markdown();
+        assert!(
+            md.contains("Documentation standard"),
+            "render_markdown must include the docs section when findings are present"
+        );
+        assert!(md.contains("docs-missing-readme"));
+    }
+
+    #[test]
+    fn render_markdown_omits_docs_section_when_findings_empty() {
+        let mut r = GateReport::new("main", "HEAD");
+        r.changed_rust_files = vec!["src/x.rs".into()];
+        r.docs = Some(PatternReport::default());
+        assert!(
+            !r.render_markdown().contains("Documentation standard"),
+            "render_markdown must not print the docs section when findings is empty"
+        );
+    }
+
+    #[test]
+    fn markdown_clean_run_message_absent_when_only_docs_findings_present() {
+        // A PR that trips ONLY the docs lane must not get the false "all clear"
+        // message — that was the bug: docs_clear wasn't part of the gate.
+        let mut r = GateReport::new("main", "HEAD");
+        r.changed_rust_files = vec!["src/x.rs".into()];
+        r.docs = Some(PatternReport {
+            findings: vec![docs_finding("docs-missing-readme", "mods/example")],
+            score: 40,
+        });
+        assert!(
+            !r.render_markdown().contains("No surviving mutations"),
+            "clean-run message must not appear when docs findings are present"
         );
     }
 }

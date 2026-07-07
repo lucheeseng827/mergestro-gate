@@ -123,7 +123,7 @@ impl ValidationSummary {
             None => "n/a".to_string(),
         };
         let mut out = String::new();
-        out.push_str("── Slop Filter · validation & trend summary (Phase 3–4) ──\n");
+        out.push_str("── Mergestro Gate · validation & trend summary (Phase 3–4) ──\n");
         out.push_str(&format!(
             "runs:       {} across {} repo(s), {} PR(s)\n",
             self.total_runs, self.distinct_repos, self.distinct_prs

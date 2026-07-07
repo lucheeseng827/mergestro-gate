@@ -15,7 +15,7 @@ use anyhow::Result;
 use crate::config::Config;
 use crate::report::{GateReport, PreflightOutcome};
 use crate::runner::CommandRunner;
-use crate::{convention, debt, diff, engine, security, slop, verdict, zero_assertion};
+use crate::{convention, debt, diff, docs_gate, engine, security, slop, verdict, zero_assertion};
 
 /// Run the full gate, returning the report (verdict included).
 pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<GateReport> {
@@ -63,6 +63,15 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
         if !diff_text.is_empty() {
             // Phase 4: debt-delta (net complexity/duplication/coupling).
             report.debt = Some(debt::from_unified_diff(&diff_text));
+
+            // Docs lane: the documentation flow — code changes must keep the
+            // touched module inside the documentation standard, and reference
+            // docs must move with new config/API surface. Whole-diff scoped
+            // (any language), like debt.
+            let report_docs = docs_gate::scan(&cfg.repo, &diff_text);
+            if !report_docs.findings.is_empty() {
+                report.docs = Some(report_docs);
+            }
 
             // Pattern lanes on the added Rust surface (advisory — never change
             // the verdict). Both are static and share the added-line scoping.

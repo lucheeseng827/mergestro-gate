@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Slop Filter — Behavioral Merge Gate.
+//! Mergestro Gate — behavioral merge gate (the slop half of Mergestro).
 //!
 //! A differential mutation gate for Rust: it surfaces real survivors the test
 //! suite passed over, on the changed surface only. Phase 1 proved the catch as
@@ -36,6 +36,7 @@ pub mod config;
 pub mod convention;
 pub mod debt;
 pub mod diff;
+pub mod docs_gate;
 pub mod engine;
 pub mod estimate;
 pub mod github;

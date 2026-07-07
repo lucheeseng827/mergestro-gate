@@ -41,18 +41,29 @@ pub struct CapSelection {
 }
 
 /// Enumerate candidate mutants on the diff (`cargo mutants --in-diff --list`).
+///
+/// `packages` scopes mutation to the same crate(s) used in [`run_mutation`] so
+/// that list and run enumerate an identical set of mutants — without matching
+/// scopes, cargo-mutants can produce a different count in each phase, which the
+/// accounting check treats as an operational failure.
 pub fn list_candidates(
     runner: &dyn CommandRunner,
     repo: &Path,
     diff_path: &Path,
+    packages: &[String],
 ) -> Result<Vec<Mutant>> {
     let diff = diff_path.to_string_lossy().into_owned();
+    let mut args: Vec<&str> = vec!["mutants", "--in-diff", &diff, "--list", "--json"];
+    // Mirror the --package scoping used by run_mutation so both phases see
+    // the same mutation surface and their counts stay in sync.
+    let pkg_strs: Vec<String> = packages
+        .iter()
+        .flat_map(|p| ["--package".to_string(), p.clone()])
+        .collect();
+    let pkg_refs: Vec<&str> = pkg_strs.iter().map(String::as_str).collect();
+    args.extend_from_slice(&pkg_refs);
     let out = runner
-        .run(
-            "cargo",
-            &["mutants", "--in-diff", &diff, "--list", "--json"],
-            repo,
-        )
+        .run("cargo", &args, repo)
         .context("running `cargo mutants --list --json`")?;
     if !out.success {
         bail!("cargo mutants --list failed:\n{}", out.combined());
@@ -240,8 +251,12 @@ pub fn run_mutation(
 
     // Validate the outcome count against the expected kept count.
     //
-    // * Over-count: engine produced MORE outcomes than kept candidates — output
-    //   is inconsistent/partial; bail.
+    // * Over-count (with viable mutations): engine produced MORE tested outcomes
+    //   than kept candidates — the survivor set could be understated; bail.
+    // * Over-count (all unviable): no mutation compiled, so no survivor can
+    //   escape. The +N gap is a systematic list/run enumeration difference in
+    //   the cargo-mutants tool (not corrupted output). Warn and continue —
+    //   the gate decision (survivors == 0) is correct regardless.
     // * Zero-count: engine produced NOTHING — it almost certainly died
     //   immediately after creating the output dir; bail.
     // * Non-zero under-count: `--list --json` can include mutants (e.g. in
@@ -250,12 +265,21 @@ pub fn run_mutation(
     // * Exact match: fully accounted; continue.
     let accounted = results.tested() + results.unviable;
     if accounted > expected {
-        bail!(
-            "cargo mutants accounted for {accounted} mutant(s), expected {expected}; \
-             inconsistent output (exit {:?}):\n{}",
-            out.code,
-            out.combined()
-        );
+        if results.tested() == 0 {
+            eprintln!(
+                "slop-gate: warning: cargo mutants accounted for {accounted} mutant(s), \
+                 expected {expected}; all {accounted} were unviable (exit {:?}). \
+                 Proceeding — survivor count is zero regardless.",
+                out.code
+            );
+        } else {
+            bail!(
+                "cargo mutants accounted for {accounted} mutant(s), expected {expected}; \
+                 inconsistent output (exit {:?}):\n{}",
+                out.code,
+                out.combined()
+            );
+        }
     }
     if accounted == 0 && expected > 0 {
         bail!(
@@ -710,6 +734,48 @@ mod tests {
         .expect("all-unviable run must not bail when count matches");
         assert_eq!(results.unviable, 3);
         assert_eq!(results.tested(), 0);
+    }
+
+    #[test]
+    fn all_unviable_over_count_warns_but_does_not_bail() {
+        use crate::runner::test_support::ScriptedRunner;
+        use tempfile::tempdir;
+
+        // cargo-mutants found 1 more unviable mutant in the run than the list
+        // predicted. When every outcome is unviable (tested() == 0), the
+        // survivor count is provably zero — the over-count gap is a systematic
+        // list/run enumeration difference in cargo-mutants, not corrupted
+        // output. The gate must warn and continue, not bail.
+        let work = tempdir().unwrap();
+        let output_dir = work.path().join("out");
+        let mutants_out = output_dir.join("mutants.out");
+        std::fs::create_dir_all(&mutants_out).unwrap();
+        std::fs::write(
+            mutants_out.join("unviable.txt"),
+            "src/a.rs:1:1: replace x\nsrc/a.rs:2:1: replace y\nsrc/a.rs:3:1: replace z\nsrc/a.rs:4:1: replace w\n",
+        )
+        .unwrap();
+
+        let runner = ScriptedRunner::new();
+        runner.push_ok("");
+
+        let cfg = Config {
+            repo: work.path().to_path_buf(),
+            ..Config::default()
+        };
+        let results = run_mutation(
+            &runner,
+            &cfg,
+            &work.path().join("diff.patch"),
+            &output_dir,
+            &[],
+            &[],
+            3, // 3 expected, 4 unviable → over-count but all unviable → warn, not bail
+        )
+        .expect("all-unviable over-count must not bail");
+        assert_eq!(results.unviable, 4);
+        assert_eq!(results.tested(), 0);
+        assert!(results.survivors.is_empty());
     }
 
     #[test]
