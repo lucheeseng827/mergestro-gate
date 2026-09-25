@@ -13,6 +13,41 @@ and **convention** lanes over the same diff. One verdict, gate-able in CI.
 - **Binary inside:** `/usr/local/bin/slop-gate` (entrypoint) · **Workdir / mount point:** `/work`
 - **Source / full docs:** github.com/lucheeseng827/mergestro-gate · Apache-2.0
 
+## Where it fits
+
+Mergestro Gate is the **merge gate** of a code-review pipeline: it sits between a
+PR (a diff plus its CI checks) and the protected branch, and decides whether the
+change earns the merge. It owns the "is this diff actually tested?" verdict and
+nothing else — no queue, no webhook, no long-running service.
+
+```
+   UPSTREAM                 MERGESTRO GATE             DOWNSTREAM
+   (a PR + its checks)      (this image)               (branch protection)
+
+ ┌──────────────┐
+ │ AI agent /   │ opens PR ─┐
+ │ developer    │           │
+ └──────────────┘           │   ┌───────────────────┐
+ ┌──────────────┐           │   │  slop-gate        │  PASS  ┌─────────────┐
+ │ Git host     │ diff +    ├─▶ │ mutate the diff · │──────▶ │ protected   │
+ │ GitHub/GitLab│ base ref ─┤   │ re-run the suite ·│  merge │ branch      │
+ └──────────────┘           │   │ static lanes →    │        └─────────────┘
+ ┌──────────────┐           │   │ one verdict       │
+ │ CI · the     │ suite ────┘   └────────┬──────────┘
+ │ suite runs   │                        │ BLOCK · exit 2
+ └──────────────┘                        └─▶ PR comment → author / agent
+```
+
+- **Upstream** — a PR against a base ref, plus a green CI suite. The gate reads a
+  git checkout, not a webhook: CI (or the GitHub Action) invokes it inside a job,
+  passing the base ref to diff against. It does not open or poll PRs itself.
+- **mergestro-gate** — diffs `base→head`, mutation-tests the changed lines,
+  runs the static lanes (slop / security / convention / debt), and reduces it all
+  to **one verdict**: exit `0` pass, exit `2` block.
+- **Downstream** — a PASS clears the change to merge; a BLOCK (exit `2` on a
+  *required* check) holds the protected branch and posts a survivor PR comment
+  back to the author or generating agent.
+
 ## Tags
 
 | Tag | Notes |

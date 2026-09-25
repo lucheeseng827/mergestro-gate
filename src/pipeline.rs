@@ -15,7 +15,10 @@ use anyhow::Result;
 use crate::config::Config;
 use crate::report::{GateReport, PreflightOutcome};
 use crate::runner::CommandRunner;
-use crate::{convention, debt, diff, docs_gate, engine, security, slop, verdict, zero_assertion};
+use crate::turnover_lane;
+use crate::{
+    convention, debt, diff, docs_gate, engine, mcp_gate, security, slop, verdict, zero_assertion,
+};
 
 /// Run the full gate, returning the report (verdict included).
 pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<GateReport> {
@@ -48,6 +51,23 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
         .map(|c| c.path.clone())
         .collect();
 
+    let diff_text = std::fs::read_to_string(&scope.diff_path).unwrap_or_default();
+
+    // MCP lane: the only lane that runs the artifact rather than reading the
+    // diff, and the only one that scopes itself by declared path rather than by
+    // language. It therefore runs *before* the language short-circuit below — a
+    // server whose surface this gate does not otherwise recognise (a config
+    // file, a schema, a language with no mutation engine) is exactly the change
+    // most likely to break it silently.
+    report.mcp = mcp_gate::run(runner, cfg, &scope.all_changed_files);
+
+    // Turnover lane: reads history, not the diff, and has its own language set,
+    // so it also runs before the language short-circuit. A missing baseline is
+    // a skipped lane with a hint, never a block (see `turnover_lane`).
+    if cfg.turnover.enabled {
+        report.turnover = Some(turnover_lane::run(cfg));
+    }
+
     if scope.changed_rust_files.is_empty()
         && scope.changed_python_files.is_empty()
         && scope.changed_js_files.is_empty()
@@ -59,36 +79,34 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
 
     // Static signals from the diff — independent of the suite's health, so they
     // run even when mutation is later suppressed.
-    if let Ok(diff_text) = std::fs::read_to_string(&scope.diff_path) {
-        if !diff_text.is_empty() {
-            // Phase 4: debt-delta (net complexity/duplication/coupling).
-            report.debt = Some(debt::from_unified_diff(&diff_text));
+    if !diff_text.is_empty() {
+        // Phase 4: debt-delta (net complexity/duplication/coupling).
+        report.debt = Some(debt::from_unified_diff(&diff_text));
 
-            // Docs lane: the documentation flow — code changes must keep the
-            // touched module inside the documentation standard, and reference
-            // docs must move with new config/API surface. Whole-diff scoped
-            // (any language), like debt.
-            let report_docs = docs_gate::scan(&cfg.repo, &diff_text);
-            if !report_docs.findings.is_empty() {
-                report.docs = Some(report_docs);
+        // Docs lane: the documentation flow — code changes must keep the
+        // touched module inside the documentation standard, and reference
+        // docs must move with new config/API surface. Whole-diff scoped
+        // (any language), like debt.
+        let report_docs = docs_gate::scan(&cfg.repo, &diff_text);
+        if !report_docs.findings.is_empty() {
+            report.docs = Some(report_docs);
+        }
+
+        // Pattern lanes on the added Rust surface (advisory — never change
+        // the verdict). Both are static and share the added-line scoping.
+        if !scope.changed_rust_files.is_empty() {
+            let added = slop::added_lines(&diff_text);
+            let report_slop = slop::scan_files(&cfg.repo, &scope.changed_rust_files, &added);
+            report.slop = Some(report_slop);
+            let report_security =
+                security::scan_files(&cfg.repo, &scope.changed_rust_files, &added);
+            if !report_security.findings.is_empty() {
+                report.security = Some(report_security);
             }
-
-            // Pattern lanes on the added Rust surface (advisory — never change
-            // the verdict). Both are static and share the added-line scoping.
-            if !scope.changed_rust_files.is_empty() {
-                let added = slop::added_lines(&diff_text);
-                let report_slop = slop::scan_files(&cfg.repo, &scope.changed_rust_files, &added);
-                report.slop = Some(report_slop);
-                let report_security =
-                    security::scan_files(&cfg.repo, &scope.changed_rust_files, &added);
-                if !report_security.findings.is_empty() {
-                    report.security = Some(report_security);
-                }
-                let report_convention =
-                    convention::scan_files(&cfg.repo, &scope.changed_rust_files, &added);
-                if !report_convention.findings.is_empty() {
-                    report.convention = Some(report_convention);
-                }
+            let report_convention =
+                convention::scan_files(&cfg.repo, &scope.changed_rust_files, &added);
+            if !report_convention.findings.is_empty() {
+                report.convention = Some(report_convention);
             }
         }
     }
@@ -404,5 +422,179 @@ mod tests {
             !report.security.as_ref().unwrap().findings.is_empty(),
             "security findings must be non-empty for the hardcoded-secret line"
         );
+    }
+
+    /// An evidence run as `specprobe` prints it in gate mode.
+    fn specprobe_stdout(failed: &[&str]) -> String {
+        let blocking: Vec<serde_json::Value> = failed
+            .iter()
+            .map(|id| {
+                serde_json::json!({
+                    "check": id,
+                    "severity": "critical",
+                    "outcome": "fail",
+                    "reason": "failed a Critical check",
+                    "detail": "stopped answering after a truncated frame",
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "source": "specprobe_negative",
+            "spec_version": "2025-11-25",
+            "suite_version": "specprobe/0.1.0",
+            "results": [],
+            "gate": {
+                "fail_on": "critical",
+                "blocking": blocking,
+                "tally": {
+                    "scored": 17, "passed": 17 - failed.len(), "failed": failed.len(),
+                    "errored": 0, "skipped": 17, "skipped_checks": [],
+                },
+            },
+        })
+        .to_string()
+    }
+
+    fn cfg_with_mcp_server(dir: &Path) -> Config {
+        Config {
+            mcp_servers: vec![crate::config::McpServerTarget {
+                name: "acme".into(),
+                paths: vec!["servers/acme".into()],
+                dir: None,
+                build: Vec::new(),
+                command: vec!["node".into(), "servers/acme/server.js".into()],
+                spec_version: "2025-11-25".into(),
+                timeout_secs: 20,
+                elicit_tool: None,
+            }],
+            ..cfg_for(dir)
+        }
+    }
+
+    #[test]
+    fn a_wedge_regression_in_the_repos_own_mcp_server_blocks_the_merge() {
+        // The thesis, end to end: a PR that makes the repo's own MCP server stop
+        // answering after a malformed frame does not merge, and the PR comment
+        // names the check that caught it.
+        let work = tempdir().unwrap();
+        repo_with_change(
+            work.path(),
+            &[("servers/acme/server.js", "// v1\n")],
+            &[(
+                "servers/acme/server.js",
+                "// v1\n// v2 — drops the reader\n",
+            )],
+        );
+        let runner = ScriptedRunner::new();
+        runner.push(1, &specprobe_stdout(&["NP-FRAME-002"]), "gate tripped");
+
+        let report = run(&runner, &cfg_with_mcp_server(work.path()), work.path()).unwrap();
+
+        assert!(report.verdict.is_block(), "{:?}", report.verdict);
+        let Verdict::Block { reasons } = &report.verdict else {
+            unreachable!()
+        };
+        assert!(
+            reasons.iter().any(|r| r.contains("NP-FRAME-002")),
+            "{reasons:?}"
+        );
+        assert!(report.render_markdown().contains("NP-FRAME-002"));
+        // The probe is the first thing spawned: the lane runs before any
+        // language engine, so a diff no engine claims still gets probed.
+        assert_eq!(runner.calls()[0].program, "specprobe");
+    }
+
+    #[test]
+    fn the_mcp_lane_runs_even_when_no_language_engine_claims_the_diff() {
+        // A change to a server's config or schema touches no file this gate has
+        // a mutation engine for, so the language short-circuit would return
+        // before the lane ever looked. That is exactly the change most likely to
+        // break a server silently.
+        let work = tempdir().unwrap();
+        repo_with_change(
+            work.path(),
+            &[("servers/acme/tools.json", "{}\n")],
+            &[("servers/acme/tools.json", "{\"a\":1}\n")],
+        );
+        let runner = ScriptedRunner::new();
+        runner.push(1, &specprobe_stdout(&["NP-LIFE-001"]), "");
+
+        let report = run(&runner, &cfg_with_mcp_server(work.path()), work.path()).unwrap();
+
+        assert!(report.changed_rust_files.is_empty());
+        assert!(report.mcp.is_some(), "the lane must have run");
+        assert!(report.verdict.is_block());
+    }
+
+    #[test]
+    fn a_clean_probe_leaves_an_otherwise_clean_run_passing() {
+        let work = tempdir().unwrap();
+        repo_with_change(
+            work.path(),
+            &[("servers/acme/server.js", "// v1\n")],
+            &[("servers/acme/server.js", "// v2\n")],
+        );
+        let runner = ScriptedRunner::new();
+        runner.push(0, &specprobe_stdout(&[]), "");
+        let report = run(&runner, &cfg_with_mcp_server(work.path()), work.path()).unwrap();
+        assert_eq!(report.verdict, Verdict::Pass);
+        // Reported, not silent: "clear" has to be visible as a result.
+        assert!(report.render_text().contains("mcp:"));
+    }
+
+    /// Renaming a file OUT of a declared server's path must still probe it. The behavioural
+    /// claim, end to end: not "the source path is recorded" (`diff.rs` pins that) but "the lane
+    /// actually runs". Moving a server's file elsewhere is a change to that server, and if the
+    /// scope only saw the destination the probe would be skipped and the gate would go quiet on
+    /// exactly the diff most likely to break it.
+    #[test]
+    fn renaming_a_file_out_of_a_declared_server_still_probes_it() {
+        let work = tempdir().unwrap();
+        let p = work.path();
+        git(p, &["init", "-q"]);
+        git(p, &["config", "user.email", "t@t.io"]);
+        git(p, &["config", "user.name", "t"]);
+        git(p, &["config", "commit.gpgsign", "false"]);
+        write_files(
+            p,
+            &[
+                ("servers/acme/tools.json", "{\"a\":1}\n"),
+                ("elsewhere/keep.txt", "x\n"),
+            ],
+        );
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-q", "--no-gpg-sign", "-m", "base"]);
+        // The destination is outside every declared path — only the SOURCE puts this in scope.
+        git(
+            p,
+            &["mv", "servers/acme/tools.json", "elsewhere/tools.json"],
+        );
+        git(p, &["commit", "-q", "--no-gpg-sign", "-m", "moved"]);
+
+        let runner = ScriptedRunner::new();
+        runner.push(1, &specprobe_stdout(&["NP-FRAME-001"]), "");
+        let report = run(&runner, &cfg_with_mcp_server(p), p).unwrap();
+
+        assert!(
+            report.mcp.is_some(),
+            "the lane must have run on a rename-out"
+        );
+        assert_eq!(runner.calls()[0].program, "specprobe");
+        assert!(report.verdict.is_block(), "{:?}", report.verdict);
+    }
+
+    #[test]
+    fn a_diff_outside_every_declared_server_never_spawns_the_prober() {
+        let work = tempdir().unwrap();
+        repo_with_change(
+            work.path(),
+            &[("docs/guide.md", "a\n")],
+            &[("docs/guide.md", "a\nb\n")],
+        );
+        let runner = ScriptedRunner::new(); // no responses: any spawn would error
+        let report = run(&runner, &cfg_with_mcp_server(work.path()), work.path()).unwrap();
+        assert!(report.mcp.is_none());
+        assert_eq!(report.verdict, Verdict::Pass);
+        assert!(runner.calls().is_empty());
     }
 }

@@ -37,6 +37,14 @@ pub type PyFileChange = FileChange;
 pub struct DiffScope {
     /// Path to the unified diff file written for `--in-diff`.
     pub diff_path: PathBuf,
+    /// **Every** repo-relative path this diff touches, deletions included and
+    /// regardless of extension.
+    ///
+    /// The unified diff above is a `cargo-mutants` artifact, not a manifest: it
+    /// carries only the files a mutation engine or the docs lane can use. A lane
+    /// that scopes itself by declared path (see [`crate::mcp_gate`]) needs to
+    /// know about the JSON schema and the deleted module too, so it reads this.
+    pub all_changed_files: Vec<String>,
     /// Changed `*.rs` files (repo-relative).
     pub changed_rust_files: Vec<String>,
     /// Changed `*.py` files with their touched line numbers (Python adapter).
@@ -64,11 +72,7 @@ pub fn compute_scope(
     let head_tree = peel_to_tree(&repo, head_ref)?;
 
     let mut unified = String::new();
-    let mut changed_rust_files = Vec::new();
-    let mut changed_python_files = Vec::new();
-    let mut changed_js_files = Vec::new();
-    let mut changed_go_files = Vec::new();
-    let mut changed_jvm_files = Vec::new();
+    let mut collected = Collected::default();
     let mut first_err: Option<anyhow::Error> = None;
 
     let mut platform = base_tree.changes().context("starting tree diff")?;
@@ -80,15 +84,7 @@ pub fn compute_scope(
         .for_each_to_obtain_tree(&head_tree, |change| {
             // Errors are captured out-of-band so the closure error type stays
             // `Infallible`; we break the walk on the first failure.
-            match render_change(
-                change,
-                &mut unified,
-                &mut changed_rust_files,
-                &mut changed_python_files,
-                &mut changed_js_files,
-                &mut changed_go_files,
-                &mut changed_jvm_files,
-            ) {
+            match render_change(change, &mut unified, &mut collected) {
                 Ok(()) => Ok::<_, std::convert::Infallible>(ControlFlow::Continue(())),
                 Err(e) => {
                     first_err = Some(e);
@@ -107,25 +103,43 @@ pub fn compute_scope(
         .with_context(|| format!("writing diff to {}", diff_path.display()))?;
 
     // Stable, de-duplicated order regardless of tree traversal order.
-    changed_rust_files.sort();
-    changed_rust_files.dedup();
-    changed_python_files.sort_by(|a, b| a.path.cmp(&b.path));
-    changed_python_files.dedup();
-    changed_js_files.sort_by(|a, b| a.path.cmp(&b.path));
-    changed_js_files.dedup();
-    changed_go_files.sort_by(|a, b| a.path.cmp(&b.path));
-    changed_go_files.dedup();
-    changed_jvm_files.sort_by(|a, b| a.path.cmp(&b.path));
-    changed_jvm_files.dedup();
+    collected.sort_and_dedup();
 
     Ok(DiffScope {
         diff_path,
-        changed_rust_files,
-        changed_python_files,
-        changed_js_files,
-        changed_go_files,
-        changed_jvm_files,
+        all_changed_files: collected.all,
+        changed_rust_files: collected.rust,
+        changed_python_files: collected.python,
+        changed_js_files: collected.js,
+        changed_go_files: collected.go,
+        changed_jvm_files: collected.jvm,
     })
+}
+
+/// The per-language buckets [`render_change`] fills, kept together so walking
+/// one more language does not mean threading one more `&mut Vec` through the
+/// tree walk.
+#[derive(Default)]
+struct Collected {
+    all: Vec<String>,
+    rust: Vec<String>,
+    python: Vec<FileChange>,
+    js: Vec<FileChange>,
+    go: Vec<FileChange>,
+    jvm: Vec<FileChange>,
+}
+
+impl Collected {
+    fn sort_and_dedup(&mut self) {
+        self.all.sort();
+        self.all.dedup();
+        self.rust.sort();
+        self.rust.dedup();
+        for bucket in [&mut self.python, &mut self.js, &mut self.go, &mut self.jvm] {
+            bucket.sort_by(|a, b| a.path.cmp(&b.path));
+            bucket.dedup();
+        }
+    }
 }
 
 /// Resolve a revspec to its tree, peeling through tags/commits as needed.
@@ -151,11 +165,7 @@ fn peel_to_tree<'repo>(repo: &'repo gix::Repository, revspec: &str) -> Result<gi
 fn render_change(
     change: Change<'_, '_, '_>,
     unified: &mut String,
-    changed_rust_files: &mut Vec<String>,
-    changed_python_files: &mut Vec<FileChange>,
-    changed_js_files: &mut Vec<FileChange>,
-    changed_go_files: &mut Vec<FileChange>,
-    changed_jvm_files: &mut Vec<FileChange>,
+    out: &mut Collected,
 ) -> Result<()> {
     let (location, old, new) = match change {
         Change::Addition { location, id, .. } => (location, Vec::new(), blob_data(id)?),
@@ -167,14 +177,32 @@ fn render_change(
         } => (location, blob_data(previous_id)?, blob_data(id)?),
         Change::Rewrite {
             location,
+            source_location,
             source_id,
             id,
+            copy,
             ..
-        } => (location, blob_data(source_id)?, blob_data(id)?),
-        Change::Deletion { .. } => return Ok(()),
+        } => {
+            // A rename changed the SOURCE path too — the file stopped existing there, which is
+            // exactly the "delete half the server" shape the deletion arm below records. Without
+            // this, renaming a file out of a declared MCP path made the diff look like it never
+            // touched that server and the probe was skipped. A copy leaves the source in place,
+            // so only a true rewrite records it.
+            if !copy && source_location != location {
+                out.all.push(source_location.to_str_lossy().into_owned());
+            }
+            (location, blob_data(source_id)?, blob_data(id)?)
+        }
+        // Nothing on the head side to mutate — but a deletion is still a change,
+        // and "delete half the server" must not read as "the diff missed it".
+        Change::Deletion { location, .. } => {
+            out.all.push(location.to_str_lossy().into_owned());
+            return Ok(());
+        }
     };
 
     let path = location.to_str_lossy().into_owned();
+    out.all.push(path.clone());
 
     if path.ends_with(".rs") {
         if let Some(body) = unified_body(&old, &new)? {
@@ -184,34 +212,34 @@ fn render_change(
                 "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n"
             ));
             unified.push_str(&body);
-            changed_rust_files.push(path);
+            out.rust.push(path);
         }
     } else if path.ends_with(".py") {
         if let Some(body) = unified_body(&old, &new)? {
             let added_lines = added_new_lines(&body);
             if !added_lines.is_empty() {
-                changed_python_files.push(FileChange { path, added_lines });
+                out.python.push(FileChange { path, added_lines });
             }
         }
     } else if is_js_source(&path) {
         if let Some(body) = unified_body(&old, &new)? {
             let added_lines = added_new_lines(&body);
             if !added_lines.is_empty() {
-                changed_js_files.push(FileChange { path, added_lines });
+                out.js.push(FileChange { path, added_lines });
             }
         }
     } else if is_go_source(&path) {
         if let Some(body) = unified_body(&old, &new)? {
             let added_lines = added_new_lines(&body);
             if !added_lines.is_empty() {
-                changed_go_files.push(FileChange { path, added_lines });
+                out.go.push(FileChange { path, added_lines });
             }
         }
     } else if is_jvm_source(&path) {
         if let Some(body) = unified_body(&old, &new)? {
             let added_lines = added_new_lines(&body);
             if !added_lines.is_empty() {
-                changed_jvm_files.push(FileChange { path, added_lines });
+                out.jvm.push(FileChange { path, added_lines });
             }
         }
     } else if crate::docs_gate::is_doc_file(&path) {
@@ -513,6 +541,51 @@ mod tests {
         assert!(
             diff_text.contains("+++ b/CONFIG.md"),
             "the changed doc file must appear in the unified diff text: {diff_text}"
+        );
+    }
+
+    /// A rename must put BOTH paths in `all_changed_files`. The file stopped existing at the
+    /// source — "delete half the server" — and renaming a file *out* of a declared MCP path must
+    /// not make that server look untouched. Whether gix reports this as a `Rewrite` (rename
+    /// tracking on) or a `Deletion` + `Addition` pair (tracking off), the source path has to
+    /// survive into the scope; this pins the behaviour without caring which representation the
+    /// walk picked.
+    #[test]
+    fn a_rename_records_its_source_path_in_all_changed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        git(p, &["init", "-q"]);
+        git(p, &["config", "user.email", "t@t.io"]);
+        git(p, &["config", "user.name", "t"]);
+        git(p, &["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(p.join("servers/acme")).unwrap();
+        std::fs::create_dir_all(p.join("elsewhere")).unwrap();
+        std::fs::write(p.join("servers/acme/tools.json"), "{\"a\":1}\n").unwrap();
+        std::fs::write(p.join("elsewhere/keep.txt"), "x\n").unwrap();
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-q", "--no-gpg-sign", "-m", "base"]);
+        git(
+            p,
+            &["mv", "servers/acme/tools.json", "elsewhere/tools.json"],
+        );
+        git(p, &["commit", "-q", "--no-gpg-sign", "-m", "moved"]);
+
+        let scope = super::compute_scope(p, "HEAD~1", "HEAD", p).unwrap();
+        assert!(
+            scope
+                .all_changed_files
+                .iter()
+                .any(|f| f == "servers/acme/tools.json"),
+            "the rename's source must be a changed path: {:?}",
+            scope.all_changed_files
+        );
+        assert!(
+            scope
+                .all_changed_files
+                .iter()
+                .any(|f| f == "elsewhere/tools.json"),
+            "the destination too: {:?}",
+            scope.all_changed_files
         );
     }
 }

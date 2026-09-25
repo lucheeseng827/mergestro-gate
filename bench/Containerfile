@@ -44,6 +44,7 @@ RUN npm install -g --silent \
 # --- build + install the gate binary from the crate source ------------------
 WORKDIR /opt/slop-gate
 COPY Cargo.toml ./
+COPY turnover ./turnover
 COPY src ./src
 RUN cargo install --path . --bin slop-gate && rm -rf /opt/slop-gate
 

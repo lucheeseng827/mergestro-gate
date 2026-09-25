@@ -388,10 +388,22 @@ fn json_function(item: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Build an anchored `--exclude-re` pattern uniquely identifying a mutant by
-/// its `file:line:col` prefix.
+/// Build an anchored `--exclude-re` pattern matching exactly one mutant.
+///
+/// The pattern has to be the mutant's *whole* name, not its `file:line:column`
+/// prefix. `cargo-mutants` emits a whole set of mutants at a single location —
+/// one per candidate replacement value for the enclosing function's return type
+/// — and every one of them shares that prefix, so a prefix pattern excludes the
+/// capped-out mutant along with the siblings the cap meant to keep. The cap then
+/// silently tests fewer mutants than it accounted for; and where *every* kept
+/// mutant has a capped-out sibling at its own line and column, it removes the
+/// selection entirely. `cargo-mutants` then reports "No mutants to filter",
+/// exits 0 and writes no output directory, which [`run_mutation`] cannot
+/// distinguish from a crashed run — so the gate fails on a PR with nothing
+/// wrong with it. Anchoring both ends of the full name leaves exactly the kept
+/// set behind.
 fn exclude_pattern(m: &Mutant) -> String {
-    format!("^{}:{}:{}:", regex_escape(&m.file), m.line, m.column)
+    format!("^{}$", regex_escape(&m.name))
 }
 
 /// Escape regex metacharacters so a literal file path matches as text.
@@ -417,6 +429,7 @@ pub fn output_dir_for(work_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use regex::Regex;
 
     fn mutant(file: &str, line: u32, func: Option<&str>) -> Mutant {
         Mutant {
@@ -587,7 +600,76 @@ mod tests {
     #[test]
     fn exclude_pattern_is_anchored() {
         let m = mutant("src/foo.rs", 12, Some("f"));
-        assert_eq!(exclude_pattern(&m), "^src/foo\\.rs:12:1:");
+        assert_eq!(exclude_pattern(&m), "^src/foo\\.rs:12:1: replace x$");
+    }
+
+    /// `cargo-mutants` puts many mutants at one `file:line:column` — one per candidate
+    /// replacement value — so an exclusion keyed on the location alone takes the siblings with
+    /// it. The pattern must name the one mutant it is for and leave the rest alone.
+    #[test]
+    fn exclude_pattern_spares_siblings_at_the_same_location() {
+        let capped =
+            Mutant::parse_name("src/foo.rs:12:5: replace f -> Option<u32> with None").unwrap();
+        let kept =
+            Mutant::parse_name("src/foo.rs:12:5: replace f -> Option<u32> with Some(0)").unwrap();
+
+        let re = Regex::new(&exclude_pattern(&capped)).expect("valid regex");
+        assert!(
+            re.is_match(&capped.name),
+            "must still exclude its own mutant"
+        );
+        assert!(
+            !re.is_match(&kept.name),
+            "must not exclude a sibling at the same location"
+        );
+    }
+
+    /// The end the whole cap exists for: whatever `apply_cap` keeps must survive the exclusions
+    /// built from what it dropped. When it does not, the run tests fewer mutants than the gate
+    /// accounted for — and once every kept mutant is matched, `cargo-mutants` has nothing left to
+    /// run, writes no output directory, and the gate reports an operational failure against a PR
+    /// that is fine.
+    #[test]
+    fn the_cap_never_excludes_a_mutant_it_kept() {
+        // One function, sixteen mutants, all at the same line and column: the shape
+        // `cargo-mutants` produces for a function whose return type has many candidate
+        // replacement values. The replacements carry regex metacharacters on purpose.
+        let candidates: Vec<Mutant> = (0..16)
+            .map(|i| {
+                let mut m = Mutant::parse_name(&format!(
+                    "src/noise.rs:222:9: replace gen -> Result<Vec<f32>> with Ok(vec![{i}.0])"
+                ))
+                .expect("parses");
+                m.function = Some("gen".into());
+                m
+            })
+            .collect();
+
+        let sel = apply_cap(candidates, 5);
+        assert_eq!(sel.kept.len(), 5);
+        assert_eq!(sel.excluded.len(), 11);
+
+        let patterns: Vec<Regex> = sel
+            .excluded
+            .iter()
+            .map(|m| Regex::new(&exclude_pattern(m)).expect("exclude pattern must be valid regex"))
+            .collect();
+
+        for (re, dropped) in patterns.iter().zip(&sel.excluded) {
+            assert!(
+                re.is_match(&dropped.name),
+                "`{}` must exclude itself",
+                dropped.name
+            );
+            for kept in &sel.kept {
+                assert!(
+                    !re.is_match(&kept.name),
+                    "the pattern excluding `{}` also matches the kept `{}`",
+                    dropped.name,
+                    kept.name
+                );
+            }
+        }
     }
 
     #[test]

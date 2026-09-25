@@ -1,6 +1,10 @@
 # Rust build artifacts
 /target
 
+# The turnover lane's crates, vendored here ONLY by the OSS-mirror sync (see .ossync.yaml).
+# In the monorepo they live in their own module and are path dependencies.
+/turnover/
+
 # Engine scratch / local run output
 .stryker-tmp/
 bench/out/

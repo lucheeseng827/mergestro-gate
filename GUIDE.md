@@ -44,6 +44,11 @@ becomes a PR a human has to read.
   execute code but assert nothing.
 - **Debt-delta budget (Phase 4).** Reports the net complexity/duplication/
   coupling a diff adds, framed against a per-PR budget; optionally blocks.
+- **MCP lane.** If the repo declares a first-party MCP server, a PR touching it
+  is *run*, not just read: the gate builds the server, talks to it over stdio
+  with the `specprobe` prober, and blocks on a conformance regression, naming the
+  check. Off until you declare a server; a skipped check never blocks, and a lane
+  that could not run blocks rather than passing quietly.
 - **Idempotent PR comment.** One comment, updated in place across re-runs.
 - **Validation telemetry + trend (Phase 3/4).** Appends a JSON-Lines record per
   run; `slop-gate analyze` reads them back into block rate, fix-vs-override,
@@ -73,6 +78,13 @@ Being explicit here saves disappointment:
   than Rust's `--in-diff`). The Python **per-function cap is blocked** on
   cosmic-ray having no pre-exec mutant selection — deferred until a custom filter
   or engine swap.
+- **The MCP lane only speaks stdio, and says so.** Roughly a third of the check
+  catalog needs an HTTP layer to express at all; over stdio those checks come
+  back as *skips* with their reason, are counted in every render, and never
+  affect the verdict either way. A run that skipped 16 of 34 checks is reported
+  as exactly that — it is not a clean sweep, and the gate does not present it as
+  one. It also probes one server at a time as a single principal, so
+  cross-principal and expiry properties are out of reach by construction.
 - **It needs a real, green, deterministic suite.** No tests, a red suite, or a
   flaky one means mutation is suppressed — the gate can't certify what it can't
   trust.
@@ -93,6 +105,11 @@ Being explicit here saves disappointment:
 > For a standalone, copy-paste **GitHub Action guide** (quickstart, every input,
 > exit codes, private-repo token, troubleshooting) see [`ACTION.md`](./ACTION.md).
 > The summary below covers the essentials.
+>
+> For **GitLab, Gitea/Forgejo or Jenkins** — and for connecting any of them to a
+> Mergestro control plane — see [`docs/CONNECT.md`](./docs/CONNECT.md), which
+> carries a working example per CI system and states per forge what the gate
+> can and cannot do.
 
 ### 1. Add the Action
 

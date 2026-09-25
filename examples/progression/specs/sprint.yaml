@@ -1,0 +1,56 @@
+# Two weeks of work, and the one spec shape where a sliding window is right.
+#
+# `since_days` makes the resolve ignore commits older than N days. A sprint board is SUPPOSED
+# to reset — that is what makes it a sprint board — so the window is the feature here.
+#
+# Know what it costs before you copy this into a long-lived plan: the window slides with the
+# clock, so a milestone closed by commits that later fall out the back of it RE-OPENS on its
+# own. Right for this file. Wrong for a quarter plan, and wrong for anything whose SVG you
+# commit, where it shows up as a tree that quietly regresses on a quiet week.
+
+version: 1
+title: Sprint 34 — checkout rewrite
+season: Sprint 34
+since_days: 14
+pr_pattern: '\(#(\d+)\)'
+
+# Small numbers for a small window: a sprint that cannot reach level 2 is not a scoreboard,
+# it is a wall of grey.
+levels: [0, 30, 70, 120, 200]
+
+nodes:
+  - id: cart
+    title: Cart rewrite
+    paths: ["src/cart/**"]
+    parts:
+      - id: model
+        title: The new cart model
+        xp: 20
+        evidence: { paths: ["src/cart/model.rs"] }
+      - id: migration
+        title: Old carts migrate cleanly
+        xp: 20
+        evidence: { paths: ["src/cart/migrate.rs"] }
+
+  - id: checkout
+    title: Checkout flow
+    requires: [cart]
+    paths: ["src/checkout/**"]
+    parts:
+      - id: flow
+        title: The happy path end to end
+        xp: 25
+        evidence: { paths: ["src/checkout/**"] }
+      - id: failures
+        title: Declines and retries
+        xp: 20
+        evidence: { subject: "decline|retry", commits: 2 }
+
+  - id: ship
+    title: Behind a flag in production
+    requires: [checkout]
+    parts:
+      - id: flag
+        title: The flag exists and defaults off
+        xp: 15
+        evidence: { paths: ["src/flags/**"], subject: "checkout" }

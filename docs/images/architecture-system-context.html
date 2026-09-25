@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gate flow — five stages, then one verdict</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f4f2ee;   /* bone */
+      --color-ink:     #1c1f26;   /* graphite */
+      --color-muted:   #4a5361;   /* slate */
+      --color-accent:  #a13d24;   /* oxide */
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1280px; width: 100%; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 900px; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · mergestro-gate</p>
+    <h1>Gate flow — five stages, then one verdict</h1>
+
+    <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="mergestro-gate-title mergestro-gate-desc">
+      <title id="mergestro-gate-title">Gate flow — five stages, then one verdict</title>
+      <desc id="mergestro-gate-desc">Flowchart showing an AI agent pushing to a quarantine ref rather than a feature branch, a gate orchestrator running five escalating stages from deterministic checks through an LLM slop judge, and a verdict engine that either fast-forwards the merge or returns structured feedback for the agent to retry.</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4a5361"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#a13d24"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f4f2ee"/>
+
+      <!-- ============ Zone ============ -->
+
+      <rect x="224" y="216" width="712" height="152" rx="8"
+            fill="rgba(28,31,38,0.02)" stroke="rgba(28,31,38,0.10)" stroke-width="0.8"/>
+      <rect x="240" y="220" width="160" height="12" rx="2" fill="#f4f2ee"/>
+      <text x="320" y="229" fill="rgba(28,31,38,0.40)" font-size="7" font-family="'Geist Mono', monospace"
+            text-anchor="middle" letter-spacing="0.14em">GATE ORCHESTRATOR · AXUM + TOKIO</text>
+
+      <!-- ============ Connectors ============ -->
+
+      <line x1="200" y1="304" x2="240" y2="304" stroke="#4a5361" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="356" y1="304" x2="380" y2="304" stroke="#4a5361" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="496" y1="304" x2="520" y2="304" stroke="#4a5361" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="636" y1="304" x2="660" y2="304" stroke="#4a5361" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="776" y1="304" x2="800" y2="304" stroke="#4a5361" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <line x1="858" y1="352" x2="858" y2="428" stroke="#4a5361" stroke-width="1.4" marker-end="url(#arrow)"/>
+      <line x1="966" y1="476" x2="1000" y2="476" stroke="#a13d24" stroke-width="1.4" marker-end="url(#arrow-accent)"/>
+      <line x1="750" y1="476" x2="672" y2="476" stroke="#4a5361" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <path d="M 440,476 H 128 Q 120,476 120,468 V 352"
+            fill="none" stroke="#4a5361" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+
+      <!-- ============ Arrow labels ============ -->
+
+      <rect x="968" y="456" width="32" height="12" rx="2" fill="#f4f2ee"/>
+      <text x="984" y="465" fill="#a13d24" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PASS</text>
+
+      <rect x="684" y="456" width="32" height="12" rx="2" fill="#f4f2ee"/>
+      <text x="700" y="465" fill="#4a5361" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">FAIL</text>
+
+      <rect x="280" y="456" width="40" height="12" rx="2" fill="#f4f2ee"/>
+      <text x="300" y="465" fill="#4a5361" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RETRY</text>
+
+      <!-- ============ Nodes ============ -->
+
+      <!-- AI agent (start, oval) -->
+      <rect x="40" y="256" width="160" height="96" rx="20" fill="#f4f2ee"/>
+      <rect x="40" y="256" width="160" height="96" rx="20" fill="rgba(74,83,97,0.10)" stroke="#79818f" stroke-width="1"/>
+      <rect x="56" y="262" width="40" height="12" rx="2" fill="transparent" stroke="rgba(121,129,143,0.40)" stroke-width="0.8"/>
+      <text x="76" y="271" fill="#4a5361" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">AGENT</text>
+      <text x="120" y="300" fill="#1c1f26" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">AI agent</text>
+      <text x="120" y="320" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">pushes agents/task</text>
+      <text x="120" y="336" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">never the feature</text>
+
+      <!-- Stage 01 -->
+      <rect x="240" y="256" width="116" height="96" rx="6" fill="#f4f2ee"/>
+      <rect x="240" y="256" width="116" height="96" rx="6" fill="#ffffff" stroke="#1c1f26" stroke-width="1"/>
+      <rect x="248" y="262" width="20" height="12" rx="2" fill="transparent" stroke="rgba(28,31,38,0.40)" stroke-width="0.8"/>
+      <text x="258" y="271" fill="#1c1f26" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">01</text>
+      <text x="298" y="300" fill="#1c1f26" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Deterministic</text>
+      <text x="298" y="320" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">build · type</text>
+      <text x="298" y="336" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">lint · fmt</text>
+
+      <!-- Stage 02 -->
+      <rect x="380" y="256" width="116" height="96" rx="6" fill="#f4f2ee"/>
+      <rect x="380" y="256" width="116" height="96" rx="6" fill="#ffffff" stroke="#1c1f26" stroke-width="1"/>
+      <rect x="388" y="262" width="20" height="12" rx="2" fill="transparent" stroke="rgba(28,31,38,0.40)" stroke-width="0.8"/>
+      <text x="398" y="271" fill="#1c1f26" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">02</text>
+      <text x="438" y="300" fill="#1c1f26" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Behavioral</text>
+      <text x="438" y="320" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">mutation · fuzz</text>
+      <text x="438" y="336" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">property tests</text>
+
+      <!-- Stage 03 -->
+      <rect x="520" y="256" width="116" height="96" rx="6" fill="#f4f2ee"/>
+      <rect x="520" y="256" width="116" height="96" rx="6" fill="#ffffff" stroke="#1c1f26" stroke-width="1"/>
+      <rect x="528" y="262" width="20" height="12" rx="2" fill="transparent" stroke="rgba(28,31,38,0.40)" stroke-width="0.8"/>
+      <text x="538" y="271" fill="#1c1f26" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">03</text>
+      <text x="578" y="300" fill="#1c1f26" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Entropy delta</text>
+      <text x="578" y="320" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">complexity · dup</text>
+      <text x="578" y="336" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">coupling vs base</text>
+
+      <!-- Stage 04 -->
+      <rect x="660" y="256" width="116" height="96" rx="6" fill="#f4f2ee"/>
+      <rect x="660" y="256" width="116" height="96" rx="6" fill="#ffffff" stroke="#1c1f26" stroke-width="1"/>
+      <rect x="668" y="262" width="20" height="12" rx="2" fill="transparent" stroke="rgba(28,31,38,0.40)" stroke-width="0.8"/>
+      <text x="678" y="271" fill="#1c1f26" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">04</text>
+      <text x="718" y="300" fill="#1c1f26" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Convention RAG</text>
+      <text x="718" y="320" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">nearest-neighbour</text>
+      <text x="718" y="336" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">hallucinated APIs</text>
+
+      <!-- Stage 05 -->
+      <rect x="800" y="256" width="116" height="96" rx="6" fill="#f4f2ee"/>
+      <rect x="800" y="256" width="116" height="96" rx="6" fill="#ffffff" stroke="#1c1f26" stroke-width="1"/>
+      <rect x="808" y="262" width="20" height="12" rx="2" fill="transparent" stroke="rgba(28,31,38,0.40)" stroke-width="0.8"/>
+      <text x="818" y="271" fill="#1c1f26" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">05</text>
+      <text x="858" y="300" fill="#1c1f26" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">LLM slop judge</text>
+      <text x="858" y="320" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">rubric-scored</text>
+      <text x="858" y="336" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">only on survivors</text>
+
+      <!-- Verdict engine (decision diamond, FOCAL 1) -->
+      <polygon points="858,428 966,476 858,524 750,476" fill="#f4f2ee"/>
+      <polygon points="858,428 966,476 858,524 750,476" fill="rgba(161,61,36,0.10)" stroke="#a13d24" stroke-width="1"/>
+      <text x="858" y="470" fill="#1c1f26" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Verdict engine</text>
+      <text x="858" y="488" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">hard block · soft score</text>
+
+      <!-- Fast-forward (end oval, FOCAL 2 — the happy path) -->
+      <rect x="1000" y="440" width="240" height="72" rx="20" fill="#f4f2ee"/>
+      <rect x="1000" y="440" width="240" height="72" rx="20" fill="rgba(161,61,36,0.10)" stroke="#a13d24" stroke-width="1"/>
+      <text x="1120" y="472" fill="#1c1f26" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Fast-forward to feature</text>
+      <text x="1120" y="492" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">the merge lands</text>
+
+      <!-- Structured feedback (step) -->
+      <rect x="440" y="440" width="232" height="72" rx="6" fill="#f4f2ee"/>
+      <rect x="440" y="440" width="232" height="72" rx="6" fill="#ffffff" stroke="#1c1f26" stroke-width="1"/>
+      <rect x="448" y="446" width="28" height="12" rx="2" fill="transparent" stroke="rgba(28,31,38,0.40)" stroke-width="0.8"/>
+      <text x="462" y="455" fill="#1c1f26" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">OUT</text>
+      <text x="556" y="478" fill="#1c1f26" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Structured feedback</text>
+      <text x="556" y="498" fill="#4a5361" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">findings → agent</text>
+
+      <!-- ============ Legend ============ -->
+
+      <line x1="40" y1="604" x2="1240" y2="604" stroke="rgba(28,31,38,0.12)" stroke-width="0.8"/>
+      <text x="40" y="620" fill="#4a5361" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.18em">LEGEND</text>
+
+      <rect x="40" y="640" width="20" height="10" rx="5" fill="rgba(74,83,97,0.10)" stroke="#79818f" stroke-width="1"/>
+      <text x="66" y="648" fill="#4a5361" font-size="8.5" font-family="'Geist', sans-serif">Start / end</text>
+
+      <rect x="200" y="640" width="14" height="10" rx="2" fill="#ffffff" stroke="#1c1f26" stroke-width="1"/>
+      <text x="220" y="648" fill="#4a5361" font-size="8.5" font-family="'Geist', sans-serif">Gate stage</text>
+
+      <polygon points="368,640 380,645 368,650 356,645" fill="rgba(161,61,36,0.10)" stroke="#a13d24" stroke-width="1"/>
+      <text x="388" y="648" fill="#4a5361" font-size="8.5" font-family="'Geist', sans-serif">Decision</text>
+
+      <rect x="520" y="640" width="14" height="10" rx="2" fill="rgba(161,61,36,0.10)" stroke="#a13d24" stroke-width="1"/>
+      <text x="540" y="648" fill="#4a5361" font-size="8.5" font-family="'Geist', sans-serif">Focal · verdict and happy path</text>
+
+      <line x1="800" y1="645" x2="828" y2="645" stroke="#4a5361" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+      <text x="836" y="648" fill="#4a5361" font-size="8.5" font-family="'Geist', sans-serif">Retry — back to quarantine</text>
+    </svg>
+  </div>
+</body>
+</html>

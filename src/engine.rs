@@ -436,6 +436,7 @@ mod tests {
 
     fn scope(rust: &[&str], py: &[&str]) -> DiffScope {
         DiffScope {
+            all_changed_files: Vec::new(),
             diff_path: PathBuf::from("diff.patch"),
             changed_rust_files: rust.iter().map(|s| s.to_string()).collect(),
             changed_python_files: py
@@ -454,6 +455,7 @@ mod tests {
     /// A scope whose only changed files are JS/TS (with one touched line each).
     fn js_scope(js: &[&str]) -> DiffScope {
         DiffScope {
+            all_changed_files: Vec::new(),
             diff_path: PathBuf::from("diff.patch"),
             changed_rust_files: vec![],
             changed_python_files: vec![],
@@ -472,6 +474,7 @@ mod tests {
     /// A scope whose only changed files are Go (with one touched line each).
     fn go_scope(go: &[&str]) -> DiffScope {
         DiffScope {
+            all_changed_files: Vec::new(),
             diff_path: PathBuf::from("diff.patch"),
             changed_rust_files: vec![],
             changed_python_files: vec![],
@@ -665,6 +668,7 @@ mod tests {
         let work = tempdir().unwrap();
         let cfg = cfg_for(work.path());
         let sc = DiffScope {
+            all_changed_files: Vec::new(),
             diff_path: PathBuf::from("diff.patch"),
             changed_rust_files: vec![],
             changed_python_files: vec![PyFileChange {

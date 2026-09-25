@@ -42,3 +42,8 @@ quote = "1"
 regex = "1"
 # JVM engine (Java/Kotlin via PIT): parse PIT's mutations.xml report.
 roxmltree = "0.20"
+# Turnover lane: the longitudinal maintainability gate (turnover) as a library — baseline on
+# disk, drift verdict, Markdown section and the Mergestro record. Path dependency in the
+# monorepo; the OSS mirror vendors the crates under `turnover/` (see .ossync.yaml).
+turnover-gate = { path = "turnover/crates/gate" }
+turnover-core = { path = "turnover/crates/core" }

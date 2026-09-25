@@ -12,7 +12,7 @@
 //! telemetry back into the Phase 3 KPIs plus the Phase 4 mutation-score trend
 //! and severity mix.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, Result};
@@ -21,6 +21,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use mergestro_gate::config::Config;
 use mergestro_gate::estimate::Estimate;
 use mergestro_gate::metrics::{self, RunContext, RunMetrics};
+use mergestro_gate::progression::init as progression_init;
 use mergestro_gate::report::GateReport;
 use mergestro_gate::runner::RealRunner;
 use mergestro_gate::severity::Severity;
@@ -53,12 +54,32 @@ enum Command {
     /// Summarise collected validation telemetry (JSON-Lines) into KPIs.
     Analyze(AnalyzeArgs),
 
+    /// Build or refresh the turnover baseline (the maintainability lane's
+    /// per-commit history file). Run once with full history, then commit or
+    /// cache the file; the gate refreshes it incrementally on every run.
+    Baseline(Box<BaselineArgs>),
+
     /// Project the mutant workload for a diff without building/testing.
     ///
     /// Runs only the enumerate + per-function cap steps (`cargo mutants
     /// --list`, no build), so it's fast and works on platforms where a full
     /// run can't. Use it to predict gate cost before pushing.
     Estimate(EstimateArgs),
+
+    /// Resolve the repository's progression tree — an authored plan closed by
+    /// the repo's own commits and PRs — and render it.
+    ///
+    /// Writes any of: the committed SVG (`--svg`), the README block between the
+    /// `mergestro:progression` markers (`--readme`), and the JSON snapshot the
+    /// Mergestro console ingests (`--json`). With `--check` nothing is written
+    /// and a stale artifact exits 2, which is the CI assertion form.
+    ///
+    /// `progression init` scaffolds a first plan from the repository's own
+    /// history, for repositories that do not have one yet.
+    ///
+    /// Boxed like `Baseline`: it carries the most flags of any subcommand, and
+    /// an unboxed variant makes every `Command` the size of this one.
+    Progression(Box<ProgressionArgs>),
 }
 
 #[derive(Args, Debug)]
@@ -66,6 +87,171 @@ struct AnalyzeArgs {
     /// Path to the JSON-Lines metrics file produced by `--metrics-file`.
     #[arg(long)]
     metrics_file: PathBuf,
+}
+
+#[derive(Args, Debug)]
+struct BaselineArgs {
+    #[command(flatten)]
+    run: RunArgs,
+
+    /// Discard the existing baseline and walk from scratch.
+    #[arg(long)]
+    full: bool,
+
+    /// First run only: ignore commits older than this many days.
+    #[arg(long)]
+    since_days: Option<u32>,
+}
+
+#[derive(Args, Debug)]
+// `progression init` takes none of the resolve flags, and passing both means
+// the caller expected one of them to do something. Say so rather than picking.
+#[command(args_conflicts_with_subcommands = true)]
+struct ProgressionArgs {
+    #[command(subcommand)]
+    command: Option<ProgressionCommand>,
+
+    /// The authored plan (YAML). See `mergestro-progression.example.yaml`.
+    ///
+    /// Optional only so that `progression init` — which writes one — can run
+    /// without it; resolving still requires it.
+    #[arg(long)]
+    spec: Option<PathBuf>,
+
+    /// Repository to resolve the plan against.
+    #[arg(long, default_value = ".")]
+    repo: PathBuf,
+
+    /// Ref whose ancestry is the history. Defaults to `HEAD`.
+    #[arg(long, default_value = "HEAD")]
+    head: String,
+
+    /// Ignore commits older than this many days (overrides the spec).
+    #[arg(long)]
+    since_days: Option<u32>,
+
+    /// Write the JSON snapshot here.
+    #[arg(long)]
+    json: Option<PathBuf>,
+
+    /// Write the SVG drawing here.
+    #[arg(long)]
+    svg: Option<PathBuf>,
+
+    /// Write the Markdown block here (standalone, not injected).
+    #[arg(long)]
+    markdown: Option<PathBuf>,
+
+    /// Update the block between the `mergestro:progression` markers in this file.
+    #[arg(long)]
+    readme: Option<PathBuf>,
+
+    /// `src` for the README's `<img>`. Defaults to `--svg` made relative to the
+    /// README's directory.
+    #[arg(long)]
+    svg_href: Option<String>,
+
+    /// Assert instead of write: exit 2 when any requested artifact is stale.
+    #[arg(long)]
+    check: bool,
+
+    /// Stop the history walk after this many commits (default 20000).
+    ///
+    /// A guard against an unbounded walk of a decade-old monorepo, not a feature. Raise it when
+    /// the walk reports it hit the cap — the alternative is a tree that understates every
+    /// milestone older than the cap.
+    #[arg(long)]
+    max_commits: Option<usize>,
+
+    /// Resolve against a truncated history anyway.
+    ///
+    /// A shallow checkout (`actions/checkout`'s default) can only see the last
+    /// few commits, so every milestone reads as barely started — wrong, and
+    /// indistinguishable from real regression. The walk refuses by default; use
+    /// `fetch-depth: 0` instead of this flag wherever the artifact is committed.
+    #[arg(long)]
+    allow_shallow: bool,
+
+    /// POST the snapshot to a Mergestro ingest endpoint (best-effort).
+    /// Token: `METRICS_TOKEN`, same as the gate's telemetry upload.
+    #[arg(long)]
+    plane_url: Option<String>,
+
+    /// `owner/repo` the snapshot is filed under in the plane. Defaults to
+    /// `GITHUB_REPOSITORY`.
+    #[arg(long)]
+    slug: Option<String>,
+
+    /// Output format for the job log.
+    #[arg(long, value_enum, default_value_t = Format::Text)]
+    format: Format,
+}
+
+#[derive(Subcommand, Debug)]
+enum ProgressionCommand {
+    /// Scaffold a first plan from the repository's own history.
+    ///
+    /// Mines the components the repository actually has and the marker its
+    /// merges write — the two things a hand-written first spec gets wrong
+    /// silently — and leaves one milestone open for the work you are planning.
+    /// The draft is a starting point to edit, not a plan: history can say what
+    /// a repository has done, never what it meant to do.
+    Init(ProgressionInitArgs),
+}
+
+#[derive(Args, Debug)]
+struct ProgressionInitArgs {
+    /// Repository to mine.
+    #[arg(long, default_value = ".")]
+    repo: PathBuf,
+
+    /// Where to write the draft.
+    #[arg(long, default_value = "progression.yaml")]
+    out: PathBuf,
+
+    /// Ref whose ancestry to mine.
+    #[arg(long, default_value = "HEAD")]
+    head: String,
+
+    /// Plan title. Defaults to the repository's directory name.
+    #[arg(long)]
+    title: Option<String>,
+
+    /// Period label written into the draft ("2026 H1", "Sprint 14").
+    #[arg(long)]
+    season: Option<String>,
+
+    /// Mine only the last N days, and write that window into the draft.
+    ///
+    /// Makes the tree a sliding window: a milestone closed by commits that
+    /// later fall out of it re-opens. Right for a sprint tree, wrong for a plan
+    /// meant to stay closed.
+    #[arg(long)]
+    since_days: Option<u32>,
+
+    /// At most this many mined milestones.
+    #[arg(long, default_value_t = progression_init::DEFAULT_MAX_NODES)]
+    max_nodes: usize,
+
+    /// A directory needs this many commits to become a milestone.
+    #[arg(long, default_value_t = progression_init::DEFAULT_MIN_COMMITS)]
+    min_commits: u32,
+
+    /// How many path segments deep a component may sit (`a/b/c` is 3).
+    #[arg(long, default_value_t = progression_init::DEFAULT_DEPTH)]
+    depth: usize,
+
+    /// Stop the history walk after this many commits.
+    #[arg(long)]
+    max_commits: Option<usize>,
+
+    /// Print the draft instead of writing it.
+    #[arg(long)]
+    stdout: bool,
+
+    /// Overwrite an existing file.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -200,9 +386,35 @@ struct RunArgs {
     #[arg(long, value_delimiter = ',')]
     block_on_pattern: Vec<String>,
 
+    /// How strict the MCP lane is: `never` | `critical` | `unproven` | `any`.
+    /// Only meaningful when the config declares `mcp_servers`.
+    #[arg(long)]
+    mcp_fail_on: Option<String>,
+
+    /// Path to the `specprobe` binary the MCP lane drives (default: on PATH).
+    #[arg(long)]
+    specprobe_bin: Option<PathBuf>,
+
     /// Post / update the report as a PR comment (uses the GitHub Actions env).
     #[arg(long)]
     comment: bool,
+
+    /// Disable the turnover (maintainability drift) lane for this run.
+    #[arg(long)]
+    no_turnover: bool,
+
+    /// Turnover baseline file (default: .turnover/baseline.json in the repo).
+    #[arg(long)]
+    turnover_baseline: Option<PathBuf>,
+
+    /// Block when the change drifts past the turnover policy (advisory by default).
+    #[arg(long)]
+    block_on_turnover_drift: bool,
+
+    /// Mergestro plane URL for the turnover baseline service (fetch before, push after
+    /// with `turnover.update_baseline`). Token: METRICS_TOKEN.
+    #[arg(long)]
+    turnover_baseline_url: Option<String>,
 
     /// Append a JSON-Lines run record to this file (validation telemetry).
     #[arg(long)]
@@ -260,6 +472,10 @@ impl RunArgs {
         if self.advisory {
             cfg.block_on_survivors = false;
             cfg.block_on_zero_assertion_tests = false;
+            // Advisory means advisory everywhere. The MCP lane gates by default
+            // once a server is declared, so leaving it out here would make
+            // `--advisory` a half-truth on exactly the repos that adopt it.
+            cfg.mcp_fail_on = "never".to_string();
         }
         if self.block_on_zero_assertion {
             cfg.block_on_zero_assertion_tests = true;
@@ -281,8 +497,28 @@ impl RunArgs {
         if self.block_on_debt {
             cfg.block_on_debt = true;
         }
+        if self.no_turnover {
+            cfg.turnover.enabled = false;
+        }
+        if let Some(v) = &self.turnover_baseline {
+            cfg.turnover.baseline = v.clone();
+        }
+        if self.block_on_turnover_drift {
+            cfg.turnover.block_on_drift = true;
+        }
+        if let Some(v) = &self.turnover_baseline_url {
+            cfg.turnover.baseline_url = Some(v.clone());
+        }
         if !self.block_on_pattern.is_empty() {
             cfg.block_on_pattern = self.block_on_pattern.clone();
+        }
+        // After --advisory, so an explicit --mcp-fail-on still wins: asking for
+        // a specific threshold is a narrower instruction than "advisory".
+        if let Some(v) = &self.mcp_fail_on {
+            cfg.mcp_fail_on = v.clone();
+        }
+        if let Some(v) = &self.specprobe_bin {
+            cfg.specprobe_bin = v.to_string_lossy().into_owned();
         }
         cfg.validate()?;
         Ok(cfg)
@@ -299,8 +535,26 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some(Command::Baseline(args)) => match run_baseline(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("slop-gate: {e:#}");
+                ExitCode::FAILURE
+            }
+        },
         Some(Command::Estimate(args)) => match run_estimate(&args) {
             Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("slop-gate: {e:#}");
+                ExitCode::FAILURE
+            }
+        },
+        Some(Command::Progression(args)) => match run_progression(&args) {
+            // A stale committed artifact is a reported outcome, not a crash —
+            // exit 2, the same code a blocked gate uses, so `--check` can be a
+            // required status check.
+            Ok(stale) if stale => ExitCode::from(EXIT_BLOCKED),
+            Ok(_) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("slop-gate: {e:#}");
                 ExitCode::FAILURE
@@ -400,23 +654,446 @@ fn emit_metrics(report: &GateReport, cfg: &Config) {
     if cfg.metrics_file.is_none() && cfg.metrics_url.is_none() {
         return;
     }
-    let record = RunMetrics::from_report(report, cfg, &RunContext::from_env());
+    let ctx = RunContext::from_env();
+    let record = RunMetrics::from_report(report, cfg, &ctx);
+    // The slop record plus, when the turnover lane measured something, its own record: two
+    // lines on one wire, so the control plane sees the mutation verdict and the drift for the
+    // same head in one batch.
+    let mut lines = vec![record.to_json_line()];
+    if let Some(line) = metrics::turnover_record_line(report, &ctx) {
+        lines.push(line);
+    }
     if let Some(path) = &cfg.metrics_file {
-        if let Err(e) = metrics::append_jsonl(path, &record) {
-            eprintln!("slop-gate: warning: could not write metrics: {e:#}");
+        for line in &lines {
+            if let Err(e) = metrics::append_line(path, line) {
+                eprintln!("slop-gate: warning: could not write metrics: {e:#}");
+                break;
+            }
         }
     }
     if let Some(url) = &cfg.metrics_url {
         let token = std::env::var("METRICS_TOKEN").ok();
-        if let Err(e) = metrics::post(url, token.as_deref(), &record) {
+        if let Err(e) = metrics::post_lines(url, token.as_deref(), &lines) {
             eprintln!("slop-gate: warning: could not post metrics: {e:#}");
         }
     }
 }
 
+/// `slop-gate progression` — resolve the plan against history and render it.
+///
+/// Returns `true` when `--check` found something stale, which the caller turns
+/// into exit 2. Writing and checking share one code path on purpose: the check
+/// compares against exactly the bytes the write would have produced, so a green
+/// check is a guarantee that running without `--check` changes nothing.
+fn run_progression(args: &ProgressionArgs) -> Result<bool> {
+    use mergestro_gate::progression::{self, render};
+
+    if let Some(ProgressionCommand::Init(init)) = &args.command {
+        return run_progression_init(init).map(|_| false);
+    }
+
+    let spec_path = args.spec.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "progression needs a plan: pass --spec <file>, or run `slop-gate progression init` \
+             to scaffold one from this repository's history"
+        )
+    })?;
+    let mut spec = progression::ProgressionSpec::from_yaml_file(spec_path)?;
+    if let Some(days) = args.since_days {
+        spec.since_days = Some(days);
+    }
+    let now = progression::now_unix();
+    let (snap, stats) =
+        progression::snapshot(&args.repo, &spec, &args.head, now, args.max_commits)?;
+    if stats.truncated {
+        // Not a hard refusal like a shallow clone: the cap is a deliberate guard that only bites
+        // enormous repositories, and `--max-commits` is the remedy. But it must never be silent —
+        // it understates exactly the way a shallow walk does.
+        eprintln!(
+            "slop-gate: warning: the walk stopped at {} commits with history left to read; \
+             milestones older than that are understated. Raise --max-commits.",
+            stats.commits
+        );
+    }
+    if stats.shallow_boundary > 0 {
+        if !args.allow_shallow {
+            anyhow::bail!(
+                "history is truncated at a shallow boundary ({} commit(s) unreadable, {} read) — \
+                 the tree would understate every milestone. Check out with `fetch-depth: 0`, or \
+                 pass --allow-shallow to resolve against what is here.",
+                stats.shallow_boundary,
+                stats.commits
+            );
+        }
+        eprintln!(
+            "slop-gate: warning: shallow history — {} commit(s) unreadable; milestones are understated.",
+            stats.shallow_boundary
+        );
+    }
+
+    // The README's `<img src>` is relative to the README, not to the CWD the
+    // job happens to run in.
+    let href = args.svg_href.clone().or_else(|| {
+        let svg = args.svg.as_ref()?;
+        let readme = args.readme.as_ref()?;
+        Some(relative_href(readme, svg))
+    });
+
+    let mut stale = Vec::new();
+    if let Some(path) = &args.svg {
+        stale.extend(write_or_check(
+            path,
+            &render::render_svg(&snap),
+            args.check,
+        )?);
+    }
+    if let Some(path) = &args.json {
+        stale.extend(write_or_check(path, &snap.render_json(), args.check)?);
+    }
+    if let Some(path) = &args.markdown {
+        let md = render::render_markdown(&snap, href.as_deref());
+        stale.extend(write_or_check(path, &md, args.check)?);
+    }
+    if let Some(path) = &args.readme {
+        let current =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let block = render::render_markdown(&snap, href.as_deref());
+        let updated = render::inject_readme(&current, &block)?;
+        stale.extend(write_or_check(path, &updated, args.check)?);
+    }
+
+    // `--check` is an assertion, not a publish: a dry run must not leave a record behind on a
+    // service the caller only meant to compare against.
+    if let Some(url) = args.plane_url.as_ref().filter(|_| !args.check) {
+        post_progression(&snap, args, url);
+    }
+
+    match args.format {
+        Format::Text => print!("{}", render::render_text(&snap)),
+        Format::Json => print!("{}", snap.render_json()),
+        Format::Markdown => print!("{}", render::render_markdown(&snap, href.as_deref())),
+    }
+
+    if !stale.is_empty() {
+        eprintln!(
+            "slop-gate: progression is stale — re-run without --check and commit: {}",
+            stale.join(", ")
+        );
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// `slop-gate progression init` — mine a first draft of the plan.
+///
+/// Walks once and uses the commits three times: to mine components, to detect
+/// the merge marker, and to resolve the draft it just wrote. That last one is
+/// the point of the report it prints — a scaffolded plan for an established
+/// repository reads as ~100% done, and an author who is not told that will read
+/// their first tree as a finished quarter.
+fn run_progression_init(args: &ProgressionInitArgs) -> Result<()> {
+    use mergestro_gate::progression::{self, history, init, resolve, spec};
+
+    if args.out.exists() && !args.force && !args.stdout {
+        anyhow::bail!(
+            "{} already exists — pass --force to overwrite it, --out to write elsewhere, or \
+             --stdout to print the draft",
+            args.out.display()
+        );
+    }
+
+    let now = progression::now_unix();
+    // The marker this repository writes is what init is trying to LEARN, so the
+    // walk parses PR numbers with the default pattern and the scaffolder reads
+    // the subjects itself.
+    let pr_pattern =
+        regex::Regex::new(spec::DEFAULT_PR_PATTERN).context("compiling the default PR pattern")?;
+    let walk = history::WalkOptions {
+        head: args.head.clone(),
+        since_unix: args
+            .since_days
+            .map(|d| now.saturating_sub(d as u64 * 86_400)),
+        max_commits: args
+            .max_commits
+            .unwrap_or_else(|| history::WalkOptions::default().max_commits),
+    };
+    let hist = history::walk(&args.repo, &walk, &pr_pattern)?;
+
+    // Unlike a resolve, a shallow or capped walk is not fatal here: a draft is
+    // a draft. It does change what can be claimed, so it is said out loud and
+    // `init::draft` drops the phases it can no longer order.
+    if hist.stats.shallow_boundary > 0 {
+        eprintln!(
+            "slop-gate: warning: shallow history ({} commit(s) unreadable) — the draft only knows \
+             the components this checkout can see. `fetch-depth: 0` sees all of them.",
+            hist.stats.shallow_boundary
+        );
+    }
+    if hist.stats.truncated {
+        eprintln!(
+            "slop-gate: warning: the walk stopped at {} commits with history left to read; raise \
+             --max-commits for an older repository.",
+            hist.stats.commits
+        );
+    }
+
+    let opts = init::InitOptions {
+        title: args
+            .title
+            .clone()
+            .unwrap_or_else(|| default_plan_title(&args.repo)),
+        season: args.season.clone(),
+        max_nodes: args.max_nodes,
+        min_commits: args.min_commits,
+        depth: args.depth,
+        since_days: args.since_days,
+    };
+    let draft = init::draft(&hist.commits, &hist.stats, &opts, now)?;
+
+    if args.stdout {
+        print!("{}", draft.yaml);
+    } else {
+        if let Some(parent) = args.out.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+        }
+        std::fs::write(&args.out, &draft.yaml)
+            .with_context(|| format!("writing {}", args.out.display()))?;
+        eprintln!("slop-gate: wrote {}", args.out.display());
+    }
+
+    for note in &draft.notes {
+        eprintln!("  {note}");
+    }
+    for component in &draft.components {
+        eprintln!(
+            "  · {} — {} commits, {} files",
+            component.path, component.commits, component.files
+        );
+    }
+
+    // What the draft says today, said by the same resolver CI will use.
+    let head_sha = progression::resolve_head_sha(&args.repo, &args.head)?;
+    let snap = resolve::resolve(&draft.spec, &hist.commits, &head_sha, now)?;
+    eprintln!(
+        "  reads now: {}/{} milestones done · level {} · {}%",
+        snap.totals.nodes_done,
+        snap.totals.nodes_total,
+        snap.totals.level,
+        snap.totals.pct_bp / 100,
+    );
+    match &draft.frontier_id {
+        Some(id) => eprintln!(
+            "  the milestones above `{id}` describe work that already landed — `{id}` is the one \
+             you write"
+        ),
+        None => eprintln!("  edit the globs to your layout, then the titles to the work"),
+    }
+    if !args.stdout {
+        eprintln!(
+            "  next: slop-gate progression --spec {} --svg docs/progression.svg --readme README.md",
+            args.out.display()
+        );
+    }
+    Ok(())
+}
+
+/// A plan title for a repository that was not given one: its directory name.
+fn default_plan_title(repo: &Path) -> String {
+    std::fs::canonicalize(repo)
+        .ok()
+        .and_then(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .filter(|n| !n.is_empty())
+        })
+        .map(|name| format!("{name} — progression"))
+        .unwrap_or_else(|| "Progression".to_string())
+}
+
+/// Write `content` to `path`, or (in check mode) report the path when it differs.
+///
+/// Also reports "would change" for a file that does not exist yet: a check that
+/// passed because the artifact was never generated is the failure this guards.
+fn write_or_check(path: &PathBuf, content: &str, check: bool) -> Result<Vec<String>> {
+    let current = std::fs::read_to_string(path).ok();
+    if current.as_deref() == Some(content) {
+        return Ok(Vec::new());
+    }
+    if check {
+        return Ok(vec![path.display().to_string()]);
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+    }
+    std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))?;
+    Ok(Vec::new())
+}
+
+/// `svg` expressed relative to the directory holding `readme`.
+///
+/// A browser resolves the `<img src>` against the README's own directory, so
+/// anything but a true relative path is a broken image. `strip_prefix` alone
+/// only covers the case where the SVG sits *under* the README's directory; for
+/// a sibling (`docs/README.md` + `assets/p.svg`) it fails, and returning the
+/// path as given would resolve to `docs/assets/p.svg`. So walk off the
+/// non-shared part of the README's directory as `..` and append the rest.
+fn relative_href(readme: &Path, svg: &Path) -> String {
+    use std::path::Component;
+    let dir = readme.parent().unwrap_or(Path::new(""));
+    let keep = |c: &Component<'_>| matches!(c, Component::Normal(_));
+    let from: Vec<Component<'_>> = dir.components().filter(keep).collect();
+    let to: Vec<Component<'_>> = svg.components().filter(keep).collect();
+
+    let shared = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut parts: Vec<String> = vec!["..".to_string(); from.len() - shared];
+    parts.extend(
+        to[shared..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    if parts.is_empty() {
+        // The SVG *is* the README's directory — nonsense input, but a caller
+        // gets its own path back rather than an empty `src`.
+        return svg.to_string_lossy().replace('\\', "/");
+    }
+    parts.join("/")
+}
+
+/// Best-effort upload of the snapshot to a Mergestro plane. Never fails the
+/// command: a docs refresh must not go red because telemetry was unreachable.
+fn post_progression(
+    snap: &mergestro_gate::progression::ProgressionSnapshot,
+    args: &ProgressionArgs,
+    url: &str,
+) {
+    use mergestro_gate::progression::record;
+
+    let ctx = RunContext::from_env();
+    let Some(repo) = args.slug.clone().or_else(|| ctx.repo.clone()) else {
+        eprintln!(
+            "slop-gate: warning: --plane-url needs a repo slug (pass --slug or set GITHUB_REPOSITORY)"
+        );
+        return;
+    };
+    let identity = record::Identity {
+        repo,
+        pr: ctx.pr,
+        head_sha: ctx.head_sha.clone().unwrap_or_default(),
+        run_id: ctx
+            .run_id
+            .clone()
+            .unwrap_or_else(|| format!("local-{}", ctx.timestamp_unix)),
+        actor: ctx.actor.clone(),
+        pr_author: ctx.pr_author.clone(),
+        timestamp_unix: ctx.timestamp_unix,
+    };
+    let line = record::to_json_line(&record::build(identity, snap));
+    let token = std::env::var("METRICS_TOKEN").ok();
+    if let Err(e) = metrics::post_lines(url, token.as_deref(), &[line]) {
+        eprintln!("slop-gate: warning: could not post progression snapshot: {e:#}");
+    }
+}
+
+/// `slop-gate baseline` — build or refresh the turnover baseline.
+fn run_baseline(args: &BaselineArgs) -> Result<()> {
+    let cfg = args.run.to_config()?;
+    let summary = mergestro_gate::turnover_lane::build_baseline(&cfg, args.full, args.since_days)?;
+    eprintln!(
+        "slop-gate: turnover baseline {} — {} new commits classified, {} total ({:.1}s)",
+        summary.path.display(),
+        summary.new_commits,
+        summary.total_commits,
+        summary.elapsed_secs
+    );
+    if let Some(all) = &summary.whole_history {
+        eprintln!(
+            "slop-gate: whole-history ratios — {}",
+            turnover_gate::render::ratio_line(all)
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cli_definition_is_well_formed() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn progression_keeps_its_flags_and_init_takes_none_of_them() {
+        use clap::Parser;
+
+        // The refresh workflow on `main` runs exactly this shape. Adding a
+        // nested subcommand must not have moved it.
+        let cli = Cli::try_parse_from([
+            "slop-gate",
+            "progression",
+            "--spec",
+            "p.yaml",
+            "--svg",
+            "a.svg",
+        ])
+        .expect("resolving still parses");
+        let Some(Command::Progression(args)) = cli.command else {
+            panic!("expected the progression command");
+        };
+        assert!(args.command.is_none());
+        assert_eq!(args.spec.as_deref(), Some(Path::new("p.yaml")));
+
+        let cli = Cli::try_parse_from(["slop-gate", "progression", "init", "--out", "p.yaml"])
+            .expect("init parses without --spec");
+        let Some(Command::Progression(args)) = cli.command else {
+            panic!("expected the progression command");
+        };
+        let Some(ProgressionCommand::Init(init)) = args.command else {
+            panic!("expected the init subcommand");
+        };
+        assert_eq!(init.out, PathBuf::from("p.yaml"));
+
+        // Both at once means one of them was expected to do something.
+        assert!(
+            Cli::try_parse_from(["slop-gate", "progression", "--spec", "p.yaml", "init"]).is_err()
+        );
+    }
+
+    #[test]
+    fn resolving_without_a_spec_says_how_to_get_one() {
+        let args = ProgressionArgs {
+            command: None,
+            spec: None,
+            repo: PathBuf::from("."),
+            head: "HEAD".into(),
+            since_days: None,
+            json: None,
+            svg: None,
+            markdown: None,
+            readme: None,
+            svg_href: None,
+            check: false,
+            max_commits: None,
+            allow_shallow: false,
+            plane_url: None,
+            slug: None,
+            format: Format::Text,
+        };
+        let err = run_progression(&args).unwrap_err().to_string();
+        assert!(err.contains("progression init"), "{err}");
+        // A wrapped literal that lost its `\` continuation reads as a run of
+        // spaces in the terminal, and every test that only greps for a substring
+        // passes anyway. This is what catches it.
+        assert!(!err.contains("  "), "double space in the message: {err}");
+    }
 
     fn base_args() -> RunArgs {
         RunArgs {
@@ -439,10 +1116,73 @@ mod tests {
             debt_budget: None,
             block_on_debt: false,
             comment: false,
+            no_turnover: false,
+            turnover_baseline: None,
+            block_on_turnover_drift: false,
+            turnover_baseline_url: None,
             metrics_file: None,
             metrics_url: None,
+            mcp_fail_on: None,
+            specprobe_bin: None,
             format: Format::Text,
         }
+    }
+
+    #[test]
+    fn a_readme_image_href_is_relative_to_the_readme() {
+        // The job's CWD is irrelevant — the browser resolves the `src` against the README.
+        assert_eq!(
+            relative_href(Path::new("mod/README.md"), Path::new("mod/docs/p.svg")),
+            "docs/p.svg"
+        );
+        // A README at the repo root and an SVG beside it.
+        assert_eq!(
+            relative_href(Path::new("README.md"), Path::new("docs/p.svg")),
+            "docs/p.svg"
+        );
+        // Siblings: the README's directory has to be walked off, or the browser resolves the
+        // image under it. This test used to assert `b/p.svg` — i.e. a broken image.
+        assert_eq!(
+            relative_href(Path::new("a/README.md"), Path::new("b/p.svg")),
+            "../b/p.svg"
+        );
+        assert_eq!(
+            relative_href(
+                Path::new("docs/README.md"),
+                Path::new("assets/progression.svg")
+            ),
+            "../assets/progression.svg"
+        );
+        // Two levels up, and a partially shared prefix that must not be over-consumed.
+        assert_eq!(
+            relative_href(Path::new("a/b/c/README.md"), Path::new("a/x/p.svg")),
+            "../../x/p.svg"
+        );
+        // The real monorepo shape stays a plain descent.
+        assert_eq!(
+            relative_href(
+                Path::new("./README.md"),
+                Path::new("./docs/progression.svg")
+            ),
+            "docs/progression.svg"
+        );
+    }
+
+    #[test]
+    fn check_mode_reports_a_missing_artifact_instead_of_passing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("p.svg");
+
+        // A check that passed because the file was never generated is the failure this guards.
+        let stale = write_or_check(&path, "body", true).unwrap();
+        assert_eq!(stale.len(), 1);
+        assert!(!path.exists(), "check mode must not write");
+
+        // Writing creates the parent directory, and re-writing the same bytes is not stale.
+        assert!(write_or_check(&path, "body", false).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "body");
+        assert!(write_or_check(&path, "body", true).unwrap().is_empty());
+        assert_eq!(write_or_check(&path, "other", true).unwrap().len(), 1);
     }
 
     #[test]
@@ -469,6 +1209,40 @@ mod tests {
         };
         let cfg = args.to_config().unwrap();
         assert_eq!(cfg.block_on_pattern, vec!["convention"]);
+    }
+
+    #[test]
+    fn advisory_turns_the_mcp_lane_advisory_too() {
+        // `--advisory` is how a team adopts the gate without it blocking. If it
+        // silenced the mutation gate but left the MCP lane blocking, the flag
+        // would mean something different on exactly the repos this lane targets.
+        let args = RunArgs {
+            advisory: true,
+            ..base_args()
+        };
+        assert_eq!(args.to_config().unwrap().mcp_fail_on, "never");
+    }
+
+    #[test]
+    fn an_explicit_mcp_threshold_outranks_advisory() {
+        // Narrower instruction wins: "--advisory --mcp-fail-on critical" is a
+        // coherent thing to ask for (score the mutations, gate the server).
+        let args = RunArgs {
+            advisory: true,
+            mcp_fail_on: Some("critical".into()),
+            ..base_args()
+        };
+        assert_eq!(args.to_config().unwrap().mcp_fail_on, "critical");
+    }
+
+    #[test]
+    fn a_misspelled_mcp_threshold_is_rejected_before_anything_runs() {
+        let args = RunArgs {
+            mcp_fail_on: Some("crticial".into()),
+            ..base_args()
+        };
+        let e = args.to_config().unwrap_err().to_string();
+        assert!(e.contains("crticial"), "{e}");
     }
 
     #[test]

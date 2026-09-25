@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1840" height="524" viewBox="0 0 1840 524" role="img" aria-label="Mergestro Gate — phased build — 14 of 14 milestones done, level 4">
+<title>Mergestro Gate — phased build — 14 of 14 milestones done, level 4</title>
+<style>
+  :root {
+    --paper: #FFF8EC; --ink: #111111; --muted: #6B6257; --line: #E3D8C6;
+    --card: #FFFFFF; --done: #1F9D55; --wip: #E08A1E; --ready: #2A7FD4; --locked: #A99E8F;
+    --track: #EDE3D3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #171512; --ink: #F3EDE3; --muted: #9C9285; --line: #332E27;
+      --card: #201D19; --done: #3DD68C; --wip: #F0B44B; --ready: #5BA9F5; --locked: #6B6257;
+      --track: #2B2621;
+    }
+  }
+  text { font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; fill: var(--ink); }
+  .mono { font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace; }
+  .muted { fill: var(--muted); }
+  .card { fill: var(--card); stroke: var(--line); }
+  .edge { fill: none; stroke: var(--line); stroke-width: 2; }
+  .edge.met { stroke: var(--done); stroke-opacity: 0.55; }
+  .done .accent { fill: var(--done); } .done .bar { fill: var(--done); } .done .card { stroke: var(--done); }
+  .wip .accent { fill: var(--wip); } .wip .bar { fill: var(--wip); } .wip .card { stroke: var(--wip); }
+  .ready .accent { fill: var(--ready); } .ready .bar { fill: var(--ready); }
+  .locked .accent { fill: var(--locked); } .locked .bar { fill: var(--locked); }
+  .locked .title { fill: var(--muted); }
+  .track { fill: var(--track); }
+</style>
+<rect width="1840" height="524" fill="var(--paper)"/>
+<text x="24" y="36" font-size="19" font-weight="650">Mergestro Gate — phased build</text>
+<text class="muted" x="24" y="56" font-size="12">Level 4 · PoC → GA · 14/14 milestones · 31/31 parts · 184 commits · 13 PRs</text>
+<rect class="track" x="24" y="66" width="1792" height="8" rx="4"/>
+<rect class="bar" x="24" y="66" width="1792" height="8" rx="4" fill="var(--done)"/>
+<text class="muted mono" x="24" y="88" font-size="11">100% · 625 / 700 XP to level 5</text>
+<path class="edge met" d="M232 135 C260 135 260 135 288 135"/>
+<path class="edge met" d="M496 135 C524 135 524 135 552 135"/>
+<path class="edge met" d="M496 135 C524 135 524 231 552 231"/>
+<path class="edge met" d="M760 135 C788 135 788 135 816 135"/>
+<path class="edge met" d="M760 231 C788 231 788 231 816 231"/>
+<path class="edge met" d="M1024 231 C1052 231 1052 327 1080 327"/>
+<path class="edge met" d="M1024 231 C1052 231 1052 423 1080 423"/>
+<path class="edge met" d="M1288 327 C1316 327 1316 327 1344 327"/>
+<path class="edge met" d="M1288 423 C1316 423 1316 327 1344 327"/>
+<path class="edge met" d="M1024 135 C1052 135 1052 135 1080 135"/>
+<path class="edge met" d="M1024 135 C1052 135 1052 231 1080 231"/>
+<path class="edge met" d="M1288 135 C1316 135 1316 135 1344 135"/>
+<path class="edge met" d="M1024 135 C1184 135 1184 231 1344 231"/>
+<path class="edge met" d="M1288 231 C1316 231 1316 231 1344 231"/>
+<path class="edge met" d="M1552 327 C1580 327 1580 135 1608 135"/>
+<path class="edge met" d="M1552 135 C1580 135 1580 135 1608 135"/>
+<path class="edge met" d="M1552 231 C1580 231 1580 135 1608 135"/>
+<g class="done" id="node-poc">
+  <rect class="card" x="24" y="96" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="24" y="108" width="4" height="54" rx="2"/>
+  <text class="title" x="40" y="122" font-size="13.5" font-weight="600">Phase 1 — prove the catch</text>
+  <text class="muted" x="40" y="140" font-size="10.5">4/4 parts · 60 XP · 41 commits · 3 PRs</text>
+  <rect class="track" x="40" y="152" width="176" height="6" rx="3"/>
+  <rect class="bar" x="40" y="152" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-gate">
+  <rect class="card" x="288" y="96" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="288" y="108" width="4" height="54" rx="2"/>
+  <text class="title" x="304" y="122" font-size="13.5" font-weight="600">Phase 2 — an installable…</text>
+  <text class="muted" x="304" y="140" font-size="10.5">4/4 parts · 60 XP · 32 commits · 5 PRs</text>
+  <rect class="track" x="304" y="152" width="176" height="6" rx="3"/>
+  <rect class="bar" x="304" y="152" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-telemetry">
+  <rect class="card" x="552" y="96" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="552" y="108" width="4" height="54" rx="2"/>
+  <text class="title" x="568" y="122" font-size="13.5" font-weight="600">Phase 3 — validation tele…</text>
+  <text class="muted" x="568" y="140" font-size="10.5">2/2 parts · 40 XP · 17 commits · 2 PRs</text>
+  <rect class="track" x="568" y="152" width="176" height="6" rx="3"/>
+  <rect class="bar" x="568" y="152" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-engine_seam">
+  <rect class="card" x="552" y="192" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="552" y="204" width="4" height="54" rx="2"/>
+  <text class="title" x="568" y="218" font-size="13.5" font-weight="600">The engine adapter seam</text>
+  <text class="muted" x="568" y="236" font-size="10.5">2/2 parts · 45 XP · 19 commits · 1 PR</text>
+  <rect class="track" x="568" y="248" width="176" height="6" rx="3"/>
+  <rect class="bar" x="568" y="248" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-rollout">
+  <rect class="card" x="816" y="96" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="816" y="108" width="4" height="54" rx="2"/>
+  <text class="title" x="832" y="122" font-size="13.5" font-weight="600">Phase 4 — rollout</text>
+  <text class="muted" x="832" y="140" font-size="10.5">2/2 parts · 50 XP · 4 commits</text>
+  <rect class="track" x="832" y="152" width="176" height="6" rx="3"/>
+  <rect class="bar" x="832" y="152" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-python">
+  <rect class="card" x="816" y="192" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="816" y="204" width="4" height="54" rx="2"/>
+  <text class="title" x="832" y="218" font-size="13.5" font-weight="600">Python adapter</text>
+  <text class="muted" x="832" y="236" font-size="10.5">2/2 parts · 35 XP · 6 commits</text>
+  <rect class="track" x="832" y="248" width="176" height="6" rx="3"/>
+  <rect class="bar" x="832" y="248" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-js">
+  <rect class="card" x="1080" y="288" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="1080" y="300" width="4" height="54" rx="2"/>
+  <text class="title" x="1096" y="314" font-size="13.5" font-weight="600">TypeScript / JS adapter</text>
+  <text class="muted" x="1096" y="332" font-size="10.5">1/1 parts · 25 XP · 6 commits</text>
+  <rect class="track" x="1096" y="344" width="176" height="6" rx="3"/>
+  <rect class="bar" x="1096" y="344" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-golang">
+  <rect class="card" x="1080" y="384" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="1080" y="396" width="4" height="54" rx="2"/>
+  <text class="title" x="1096" y="410" font-size="13.5" font-weight="600">Go adapter</text>
+  <text class="muted" x="1096" y="428" font-size="10.5">1/1 parts · 25 XP · 5 commits</text>
+  <rect class="track" x="1096" y="440" width="176" height="6" rx="3"/>
+  <rect class="bar" x="1096" y="440" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-jvm">
+  <rect class="card" x="1344" y="288" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="1344" y="300" width="4" height="54" rx="2"/>
+  <text class="title" x="1360" y="314" font-size="13.5" font-weight="600">Java / Kotlin adapter</text>
+  <text class="muted" x="1360" y="332" font-size="10.5">1/1 parts · 30 XP · 4 commits</text>
+  <rect class="track" x="1360" y="344" width="176" height="6" rx="3"/>
+  <rect class="bar" x="1360" y="344" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-pattern_lanes">
+  <rect class="card" x="1080" y="96" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="1080" y="108" width="4" height="54" rx="2"/>
+  <text class="title" x="1096" y="122" font-size="13.5" font-weight="600">Pattern checker lanes</text>
+  <text class="muted" x="1096" y="140" font-size="10.5">3/3 parts · 60 XP · 14 commits · 1 PR</text>
+  <rect class="track" x="1096" y="152" width="176" height="6" rx="3"/>
+  <rect class="bar" x="1096" y="152" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-turnover">
+  <rect class="card" x="1080" y="192" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="1080" y="204" width="4" height="54" rx="2"/>
+  <text class="title" x="1096" y="218" font-size="13.5" font-weight="600">Maintainability drift lane</text>
+  <text class="muted" x="1096" y="236" font-size="10.5">2/2 parts · 40 XP · 6 commits · 4 PRs</text>
+  <rect class="track" x="1096" y="248" width="176" height="6" rx="3"/>
+  <rect class="bar" x="1096" y="248" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-mcp_lane">
+  <rect class="card" x="1344" y="96" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="1344" y="108" width="4" height="54" rx="2"/>
+  <text class="title" x="1360" y="122" font-size="13.5" font-weight="600">MCP admission lane</text>
+  <text class="muted" x="1360" y="140" font-size="10.5">2/2 parts · 45 XP · 4 commits · 1 PR</text>
+  <rect class="track" x="1360" y="152" width="176" height="6" rx="3"/>
+  <rect class="bar" x="1360" y="152" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-progression">
+  <rect class="card" x="1344" y="192" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="1344" y="204" width="4" height="54" rx="2"/>
+  <text class="title" x="1360" y="218" font-size="13.5" font-weight="600">Progression tree</text>
+  <text class="muted" x="1360" y="236" font-size="10.5">5/5 parts · 110 XP · 104 commits · 6 PRs</text>
+  <rect class="track" x="1360" y="248" width="176" height="6" rx="3"/>
+  <rect class="bar" x="1360" y="248" width="176" height="6" rx="3"/>
+</g>
+<g class="done" id="node-ga">
+  <rect class="card" x="1608" y="96" width="208" height="78" rx="10" stroke-width="1.5"/>
+  <rect class="accent" x="1608" y="108" width="4" height="54" rx="2"/>
+  <text class="title" x="1624" y="122" font-size="13.5" font-weight="600">GA</text>
+  <text class="muted" x="1624" y="140" font-size="10.5">Done · marker</text>
+  <rect class="track" x="1624" y="152" width="176" height="6" rx="3"/>
+  <rect class="bar" x="1624" y="152" width="176" height="6" rx="3"/>
+</g>
+<g class="done"><circle class="accent" cx="28" cy="488" r="4"/><text class="muted" x="38" y="492" font-size="11">14 Done</text></g>
+<g class="wip"><circle class="accent" cx="106" cy="488" r="4"/><text class="muted" x="116" y="492" font-size="11">0 In progress</text></g>
+<g class="ready"><circle class="accent" cx="220" cy="488" r="4"/><text class="muted" x="230" y="492" font-size="11">0 Ready</text></g>
+<g class="locked"><circle class="accent" cx="298" cy="488" r="4"/><text class="muted" x="308" y="492" font-size="11">0 Locked</text></g>
+</svg>

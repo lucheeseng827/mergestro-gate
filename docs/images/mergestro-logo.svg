@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="12" fill="#FFF8EC"/>
+  <!-- two branches that never touch, and the join that breaks -->
+  <g fill="none" stroke="#111111" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M17 52 C 17 34, 21 27, 32 26"/>
+    <path d="M47 52 C 47 34, 43 27, 32 26"/>
+  </g>
+  <path d="M32 26 L 32 13" fill="none" stroke="#111111" stroke-width="5.5" stroke-linecap="round"/>
+  <path d="M22 20 L 32 10.5 L 42 20" fill="none" stroke="#111111" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="32" cy="26" r="4.5" fill="#FF6BAE"/>
+</svg>

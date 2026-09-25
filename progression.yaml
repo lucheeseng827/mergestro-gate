@@ -1,0 +1,230 @@
+# Mergestro Gate — the progression tree this repository is measured against.
+#
+# Authored by hand: this is the plan, not a derivation of the log. The repo only
+# ever *closes* what is declared here, and `slop-gate progression` renders the
+# result into docs/progression.svg and the README block.
+#
+# Paths are repo-root relative (this is a monorepo; the OSS mirror rewrites the
+# module prefix to `.`), so a glob reads the same in both checkouts.
+#
+#   cargo run --bin slop-gate -- progression \
+#     --spec ./progression.yaml \
+#     --svg  ./docs/progression.svg \
+#     --readme ./README.md
+version: 1
+title: Mergestro Gate — phased build
+season: PoC → GA
+
+nodes:
+  # ── the original phased plan ────────────────────────────────────────────────
+  - id: poc
+    title: Phase 1 — prove the catch
+    summary: A differential mutation run over the changed surface, reported and never blocking.
+    parts:
+      - id: diff
+        title: Diff the head against the base ref
+        xp: 15
+        evidence: { paths: ["./src/diff.rs"] }
+      - id: mutants
+        title: Mutate only the changed surface
+        xp: 20
+        evidence: { paths: ["./src/mutants.rs"] }
+      - id: verdict
+        title: Turn survivors into a verdict
+        xp: 15
+        evidence: { paths: ["./src/verdict.rs"] }
+      - id: report
+        title: Render the report three ways
+        xp: 10
+        evidence: { paths: ["./src/report.rs"] }
+
+  - id: gate
+    title: Phase 2 — an installable gate
+    summary: Blocking verdict, PR comment, and the composite Action a runner can pull.
+    requires: [poc]
+    parts:
+      - id: config
+        title: One config across CLI, YAML and Action
+        xp: 15
+        evidence: { paths: ["./src/config.rs"] }
+      - id: comment
+        title: Idempotent PR comment
+        xp: 15
+        evidence: { paths: ["./src/github.rs"] }
+      - id: action
+        title: Packaged as a GitHub Action
+        xp: 20
+        evidence: { paths: ["./action.yml"] }
+      - id: preflight
+        title: Determinism pre-flight before any mutant
+        xp: 10
+        evidence: { paths: ["./src/preflight.rs"] }
+
+  - id: telemetry
+    title: Phase 3 — validation telemetry
+    summary: Every run emits a record; `analyze` reads them back into the headline KPIs.
+    requires: [gate]
+    parts:
+      - id: emit
+        title: Emit a run record
+        xp: 20
+        evidence: { paths: ["./src/metrics.rs"] }
+      - id: analyze
+        title: Fix-vs-override, block rate, latency
+        xp: 20
+        evidence: { paths: ["./src/analyze.rs"] }
+
+  - id: engine_seam
+    title: The engine adapter seam
+    summary: One trait every language plugs into, so verdict/severity/telemetry stay shared.
+    requires: [gate]
+    parts:
+      - id: seam
+        title: Extract the adapter trait
+        xp: 30
+        evidence: { paths: ["./src/engine.rs"] }
+      - id: estimate
+        title: Project the workload without running it
+        xp: 15
+        evidence: { paths: ["./src/estimate.rs"] }
+
+  - id: rollout
+    title: Phase 4 — rollout
+    summary: Severity ranking, a debt-delta budget, and the trend dashboard.
+    requires: [telemetry]
+    parts:
+      - id: severity
+        title: Rank survivors by severity
+        xp: 25
+        evidence: { paths: ["./src/severity.rs"] }
+      - id: debt
+        title: Debt-delta budget with burn-rate framing
+        xp: 25
+        evidence: { paths: ["./src/debt.rs"] }
+
+  # ── Track A: languages ──────────────────────────────────────────────────────
+  - id: python
+    title: Python adapter
+    summary: cosmic-ray, diff-scoped, through the same verdict and telemetry as Rust.
+    requires: [engine_seam]
+    parts:
+      - id: adapter
+        title: cosmic-ray behind the seam
+        xp: 25
+        evidence: { paths: ["./src/python.rs"] }
+      - id: ci
+        title: Opt-in CI packaging
+        xp: 10
+        evidence:
+          paths: ["./action.yml"]
+          subject: "python"
+
+  - id: js
+    title: TypeScript / JS adapter
+    summary: Stryker behind the same seam — the biggest agent-coding surface.
+    requires: [python]
+    parts:
+      - id: adapter
+        title: Stryker behind the seam
+        xp: 25
+        evidence: { paths: ["./src/js.rs"] }
+
+  - id: golang
+    title: Go adapter
+    requires: [python]
+    parts:
+      - id: adapter
+        title: gremlins behind the seam
+        xp: 25
+        evidence: { paths: ["./src/golang.rs"] }
+
+  - id: jvm
+    title: Java / Kotlin adapter
+    summary: PIT, parsed from its own XML report. The enterprise-reach adapter.
+    requires: [js, golang]
+    parts:
+      - id: adapter
+        title: PIT behind the seam
+        xp: 30
+        evidence: { paths: ["./src/jvm.rs"] }
+
+  # ── Track B: the static lanes ───────────────────────────────────────────────
+  - id: pattern_lanes
+    title: Pattern checker lanes
+    summary: Slop signatures, security anti-patterns and repo conventions — static and cheap.
+    requires: [rollout]
+    parts:
+      - id: slop
+        title: Slop signature lane
+        xp: 20
+        evidence: { paths: ["./src/slop.rs"] }
+      - id: security
+        title: Security anti-pattern lane
+        xp: 20
+        evidence: { paths: ["./src/security.rs"] }
+      - id: convention
+        title: Convention lane
+        xp: 20
+        evidence: { paths: ["./src/convention.rs"] }
+
+  - id: turnover
+    title: Maintainability drift lane
+    summary: The longitudinal gate — this change against the repository's own baseline.
+    requires: [rollout]
+    parts:
+      - id: lane
+        title: Wire the turnover gate as a lane
+        xp: 25
+        evidence: { paths: ["./src/turnover_lane.rs"] }
+      - id: baseline
+        title: Baseline build + refresh
+        xp: 15
+        evidence:
+          paths: ["./src/main.rs"]
+          subject: "baseline"
+
+  - id: mcp_lane
+    title: MCP admission lane
+    summary: The one lane that runs the artifact — build the server, probe it, block a regression.
+    requires: [pattern_lanes]
+    parts:
+      - id: gate
+        title: Probe a first-party MCP server
+        xp: 30
+        evidence: { paths: ["./src/mcp_gate.rs"] }
+      - id: docs
+        title: Docs gate for a declared surface
+        xp: 15
+        evidence: { paths: ["./src/docs_gate.rs"] }
+
+  # ── the plan, drawn ─────────────────────────────────────────────────────────
+  - id: progression
+    title: Progression tree
+    summary: This tree — the plan resolved against the repo's own commits and PRs.
+    requires: [rollout, turnover]
+    parts:
+      - id: engine
+        title: Spec, resolver and layout
+        xp: 30
+        evidence: { paths: ["./src/progression/**"] }
+      - id: svg
+        title: Committed SVG + README block
+        xp: 20
+        evidence: { paths: ["./docs/progression.svg"] }
+      - id: canvas
+        title: The console canvas
+        xp: 25
+        evidence: { paths: ["./ee/mergestro/ui/app.js"], subject: "progression" }
+      - id: workflow
+        title: A workflow that keeps it fresh
+        xp: 15
+        evidence: { paths: [".github/workflows/mergestro-progression.yml"] }
+      - id: scaffold
+        title: A first plan mined from the repo
+        xp: 20
+        evidence: { paths: ["./src/progression/init.rs"] }
+
+  - id: ga
+    title: GA
+    summary: Every adapter, every lane, and the plan visible from the README. A marker — it closes when its requirements do.
+    requires: [jvm, mcp_lane, progression]

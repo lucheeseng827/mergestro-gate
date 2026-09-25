@@ -71,6 +71,40 @@ pub fn decide(report: &GateReport, cfg: &Config) -> Verdict {
         }
     }
 
+    // Turnover lane — the longitudinal drift gate. Advisory unless
+    // `turnover.block_on_drift`; a skipped lane (no baseline yet) never blocks.
+    if cfg.turnover.block_on_drift {
+        if let Some(t) = &report.turnover {
+            if t.is_fail() {
+                for m in &t.messages {
+                    reasons.push(format!("turnover: {m}"));
+                }
+            }
+        }
+    }
+
+    // MCP lane — gates by default, because declaring a server in `mcp_servers`
+    // IS the opt-in; `mcp_fail_on: never` turns it advisory.
+    //
+    // `never` is honoured HERE, not only in the prober, and for both arms of
+    // "not clear". A gating check can't reach this loop at `never` (the prober
+    // was told the threshold and returns nothing blocking) — but `Unrunnable`
+    // is produced by the lane itself, threshold-unseen, so without this guard a
+    // missing prober binary hard-blocked repos that asked for report-only. At
+    // `never` nothing is being certified, so "the gate cannot certify what it
+    // did not run" has nothing to protect; the did-not-run reason still renders
+    // in the report, it just doesn't fail the build the operator said not to
+    // fail. At every other threshold an unrunnable lane still blocks.
+    if let Some(mcp) = &report.mcp {
+        if mcp.fail_on.trim() != "never" {
+            for reason in mcp.blocking().filter_map(|s| s.block_reason()) {
+                if !reasons.contains(&reason) {
+                    reasons.push(reason);
+                }
+            }
+        }
+    }
+
     // Track B: pattern-lane gate — opt-in. Each configured target (a lane name
     // or a specific rule id) blocks when matched. Advisory unless requested.
     for reason in pattern_block_reasons(report, &cfg.block_on_pattern) {
@@ -139,6 +173,57 @@ fn lane_reason(lane: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn drifted_lane() -> crate::turnover_lane::TurnoverLane {
+        crate::turnover_lane::TurnoverLane {
+            status: "fail".into(),
+            mode: "blocking".into(),
+            reason: None,
+            scope: "commits in HEAD not in main (3 commits)".into(),
+            window_days: 0,
+            head_sha: "abc".into(),
+            window: Default::default(),
+            baseline: Default::default(),
+            has_baseline: true,
+            failed_checks: vec!["copy_paste".into()],
+            messages: vec![
+                "copy_paste rose to 30.0% from baseline 8.0% (allowed rise 5.0%)".into(),
+            ],
+            verdict: None,
+            markdown: String::new(),
+            text: String::new(),
+        }
+    }
+
+    #[test]
+    fn turnover_drift_blocks_only_when_asked() {
+        let mut report = GateReport::new("main", "HEAD");
+        report.turnover = Some(drifted_lane());
+        let mut cfg = Config {
+            block_on_survivors: false,
+            ..Config::default()
+        };
+        assert!(
+            matches!(decide(&report, &cfg), Verdict::Pass),
+            "advisory by default"
+        );
+        cfg.turnover.block_on_drift = true;
+        match decide(&report, &cfg) {
+            Verdict::Block { reasons } => {
+                assert_eq!(reasons.len(), 1);
+                assert!(
+                    reasons[0].starts_with("turnover: copy_paste rose"),
+                    "{reasons:?}"
+                );
+            }
+            Verdict::Pass => panic!("a drifted lane must block when block_on_drift is set"),
+        }
+        // A skipped lane never blocks, even with the gate on.
+        let mut skipped = drifted_lane();
+        skipped.status = "skipped".into();
+        report.turnover = Some(skipped);
+        assert!(matches!(decide(&report, &cfg), Verdict::Pass));
+    }
     use crate::report::{Mutant, PreflightOutcome};
 
     fn report_with_survivors(n: usize) -> GateReport {
@@ -390,5 +475,100 @@ mod tests {
             ..Config::default()
         };
         assert!(decide(&r, &cfg).is_block());
+    }
+
+    fn mcp_report(status: crate::mcp_gate::McpServerStatus) -> crate::mcp_gate::McpGateReport {
+        crate::mcp_gate::McpGateReport {
+            fail_on: "critical".into(),
+            servers: vec![crate::mcp_gate::McpServerOutcome {
+                name: "acme".into(),
+                status,
+            }],
+        }
+    }
+
+    fn probed(blocking: &[&str], skipped: usize) -> crate::mcp_gate::McpServerStatus {
+        crate::mcp_gate::McpServerStatus::Probed {
+            tally: crate::mcp_gate::McpTally {
+                scored: 34 - skipped,
+                passed: 34 - skipped - blocking.len(),
+                failed: blocking.len(),
+                errored: 0,
+                skipped,
+            },
+            blocking: blocking
+                .iter()
+                .map(|id| crate::mcp_gate::McpBlockingCheck {
+                    check: (*id).to_string(),
+                    severity: Some("critical".into()),
+                    outcome: "fail".into(),
+                    reason: "failed a Critical check".into(),
+                    detail: None,
+                })
+                .collect(),
+            liveness: None,
+            suite_version: None,
+        }
+    }
+
+    #[test]
+    fn an_unrunnable_lane_under_never_reports_but_does_not_block() {
+        // `never` means report-only for BOTH arms of "not clear". A missing
+        // prober is an infrastructure gap, not a server regression; hard-blocking
+        // on it under report-only contradicted `config.rs`'s own documentation.
+        let mut r = report_with_survivors(0);
+        let mut m = mcp_report(crate::mcp_gate::McpServerStatus::Unrunnable {
+            reason: "could not run `specprobe`".into(),
+        });
+        m.fail_on = "never".into();
+        r.mcp = Some(m);
+        assert_eq!(decide(&r, &Config::default()), Verdict::Pass);
+        // ...and the report still says the lane did not run — advisory, not silent.
+        assert!(r.render_text().contains("did not run"));
+    }
+
+    #[test]
+    fn an_mcp_regression_blocks_without_any_extra_opt_in() {
+        // Declaring the server is the opt-in; the thesis feature has to gate by
+        // default or it is a report, not a gate.
+        let mut r = report_with_survivors(0);
+        r.mcp = Some(mcp_report(probed(&["NP-FRAME-001"], 17)));
+        let v = decide(&r, &Config::default());
+        assert!(v.is_block());
+        let Verdict::Block { reasons } = v else {
+            unreachable!()
+        };
+        assert!(
+            reasons
+                .iter()
+                .any(|x| x.contains("NP-FRAME-001") && x.contains("acme")),
+            "{reasons:?}"
+        );
+    }
+
+    #[test]
+    fn a_clean_mcp_run_with_many_skips_does_not_block() {
+        // 17 of 34 checks skip over stdio. If that read as a failure the lane
+        // would block every conformant server it was ever pointed at.
+        let mut r = report_with_survivors(0);
+        r.mcp = Some(mcp_report(probed(&[], 17)));
+        assert_eq!(decide(&r, &Config::default()), Verdict::Pass);
+    }
+
+    #[test]
+    fn a_lane_that_could_not_run_blocks_rather_than_contributing_nothing() {
+        let mut r = report_with_survivors(0);
+        r.mcp = Some(mcp_report(crate::mcp_gate::McpServerStatus::Unrunnable {
+            reason: "could not run `specprobe`".into(),
+        }));
+        let v = decide(&r, &Config::default());
+        assert!(v.is_block(), "an unrunnable lane must not read as a pass");
+        let Verdict::Block { reasons } = v else {
+            unreachable!()
+        };
+        assert!(
+            reasons.iter().any(|x| x.contains("could not run")),
+            "{reasons:?}"
+        );
     }
 }

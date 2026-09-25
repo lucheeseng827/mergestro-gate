@@ -1,14 +1,36 @@
-# Example Phase 2 wiring — copy into a target repo's .github/workflows/.
+# GitHub Actions — behavioral merge gate, plane telemetry, and a PR comment.
 #
-# Phase 2 is a real gate: a blocked verdict exits non-zero and fails this
-# required check. Make it a required status check in branch protection to
-# actually block the merge. Set `advisory: "true"` to report without blocking.
-name: slop-gate
+# Copy into a target repo's `.github/workflows/`. This is the fastest of the
+# four integrations by a wide margin: the Action installs a ~5 MB static binary
+# onto a runner that already has the toolchain, and every piece of PR context
+# the gate needs is already in the environment.
+#
+# A blocked verdict exits non-zero and fails this check. Make it a **required**
+# status check in branch protection to actually block the merge; set
+# `advisory: "true"` to report without blocking while you validate.
+#
+# ── Repository settings to add (Settings → Secrets and variables → Actions) ──
+#
+#   MERGESTRO_INGEST_URL   variable — https://plane.example.com/v1/ingest
+#                          Must be https://; the gate refuses plaintext because
+#                          the request carries the bearer below.
+#   METRICS_TOKEN          secret — the plane's per-tenant ingest key.
+#
+# Leave both unset and the gate still gates — it just reports to nobody, and the
+# fleet views (retention, disable rate, fix-vs-override) never see this repo.
+# See `docs/ci-mergestro-wiring.md` at the monorepo root for wiring BOTH gates
+# (Gate + Queue) to one ingest, and `docs/OPERATIONS.md` for the turnover
+# baseline service, which uses a different variable on purpose.
+
+name: mergestro-gate
 
 on:
   pull_request:
 
-# Needed so the gate can post / update its PR comment.
+# Needed so the gate can post / update its PR comment. `pull-requests: write`
+# rather than `issues: write` is enough on Actions' own token — but note that a
+# GitHub *App* commenting on a PR needs the **Issues** permission, because the
+# REST API files PR comments under `/issues/{n}/comments`.
 permissions:
   contents: read
   pull-requests: write
@@ -27,7 +49,7 @@ jobs:
       # Warm/reuse target/ so the baseline build isn't re-paid each run.
       - uses: Swatinem/rust-cache@v2
 
-      - name: Slop Filter behavioral gate
+      - name: Mergestro behavioral gate
         # Pin to a released tag (or a commit SHA) rather than @main so consumers
         # don't pick up breaking changes unexpectedly.
         uses: lucheeseng827/mergestro-gate@v1
@@ -36,5 +58,9 @@ jobs:
           max-per-function: "5"
           jobs: "4"
           comment: "true"
+          # ── Plane telemetry. Both or neither: a URL without a token gets a
+          # 401 that the gate reports as a warning and nothing else. ──
+          metrics-url: ${{ vars.MERGESTRO_INGEST_URL }}
+          metrics-token: ${{ secrets.METRICS_TOKEN }}
           # advisory: "true"                 # report without blocking
           # block-on-zero-assertion: "true"  # also gate assertion-free tests

@@ -1,0 +1,113 @@
+# An established repository adopting a plan — the hard case.
+#
+# Everything `progression init` mines already happened, so a draft committed unedited reads
+# ~100% on day one and then never moves. The fix is not a sliding window (see sprint.yaml for
+# what that costs); it is to say the true thing: the finished work is the tree's ROOTS, and
+# the plan starts after it.
+#
+# So the mined milestones are compressed into a few baseline roots carrying little XP, and the
+# quarter's actual work — open, falsifiable, worth most of the points — hangs off them.
+
+version: 1
+title: Platform — 2026 Q2
+season: 2026 Q2
+pr_pattern: '\(#(\d+)\)'
+
+# Optional. Omit for the built-in eight bands; set your own when you want the first level
+# reachable in a week rather than a day. Must be strictly ascending.
+levels: [0, 80, 200, 400, 700, 1100, 1600, 2400]
+
+nodes:
+  # ── The baseline: what the repository already is. ─────────────────────────────────
+  # Three roots instead of the eight components `init` found. Detail here buys nothing: no
+  # reader is surprised that the service you have been running for two years exists.
+  - id: gateway
+    title: Gateway
+    paths: ["services/gateway/**"]
+    parts:
+      - id: exists
+        title: Routing, auth and the edge
+        xp: 10
+        evidence: { paths: ["services/gateway/**"] }
+
+  - id: pipeline
+    title: Event pipeline
+    paths: ["services/pipeline/**"]
+    parts:
+      - id: exists
+        title: Ingest, enrich, fan out
+        xp: 10
+        evidence: { paths: ["services/pipeline/**"] }
+
+  - id: console
+    title: Console
+    paths: ["apps/console/**"]
+    parts:
+      - id: exists
+        title: The operator UI
+        xp: 10
+        evidence: { paths: ["apps/console/**"] }
+
+  # A marker closing the baseline. Everything the quarter plans hangs off this one id, so the
+  # canvas reads left to right: what we had → what we said we would do.
+  - id: baseline
+    title: Where Q2 started
+    requires: [gateway, pipeline, console]
+
+  # ── The quarter: open, and worth the points. ──────────────────────────────────────
+  - id: multiregion
+    title: Two regions, one control plane
+    summary: The quarter's headline. Done when traffic is served from both and a failover drill passed.
+    requires: [baseline]
+    parts:
+      - id: replication
+        title: State replicates across regions
+        xp: 40
+        evidence: { paths: ["services/pipeline/replication/**"] }
+      - id: routing
+        title: The gateway routes by region
+        xp: 30
+        evidence: { paths: ["services/gateway/region/**"] }
+      - id: failover
+        title: A failover drill passed
+        xp: 30
+        evidence: { paths: ["docs/drills/**"], subject: "failover" }
+
+  - id: tenancy
+    title: Hard multi-tenancy
+    summary: A tenant cannot see, exhaust, or slow down another.
+    requires: [baseline]
+    parts:
+      - id: isolation
+        title: Per-tenant isolation in the pipeline
+        xp: 40
+        evidence: { paths: ["services/pipeline/tenant/**"] }
+      - id: quotas
+        title: Quotas that actually bite
+        xp: 25
+        evidence: { paths: ["services/gateway/quota/**"] }
+      - id: audit
+        title: Cross-tenant access is auditable
+        xp: 25
+        # Two distinct merged PRs rather than two commits: a security surface should be
+        # reviewed more than once, and `prs:` is the only threshold that says so.
+        evidence: { paths: ["services/gateway/audit/**"], commits: 0, prs: 2 }
+
+  - id: selfserve
+    title: Self-serve onboarding
+    summary: A new tenant gets in without anyone from the team being involved.
+    # Both, not one: this is why the node set is a DAG rather than a literal tree.
+    requires: [multiregion, tenancy]
+    parts:
+      - id: signup
+        title: Sign-up flow
+        xp: 30
+        evidence: { paths: ["apps/console/signup/**"] }
+      - id: docs
+        title: Docs someone can follow unaided
+        xp: 20
+        evidence: { paths: ["docs/onboarding/**"] }
+
+  - id: q2
+    title: Q2 shipped
+    requires: [selfserve]

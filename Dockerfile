@@ -10,9 +10,11 @@
 FROM rust:1-alpine AS builder
 RUN apk add --no-cache musl-dev
 WORKDIR /app
-# The crate is standalone here (its own [workspace] root). target/ is kept out
-# by .dockerignore.
-COPY Cargo.toml Cargo.lock ./
+# The context is the OSS cut (the mirror's root, or `make docker-build`'s stage of it):
+# Cargo.toml path-depends on the vendored turnover/crates/*, and a monorepo checkout of
+# this dir has neither those crates nor a Cargo.lock (hence `Cargo.lock*`).
+COPY Cargo.toml Cargo.lock* ./
+COPY turnover ./turnover/
 COPY src ./src/
 RUN cargo build --release --bin slop-gate
 

@@ -108,6 +108,28 @@ inputs:
     description: "Pinned cosmic-ray version (when enable-python). Pin to a known-good release for reproducible CI."
     required: false
     default: "8.4.6"
+  turnover:
+    description: "Run the turnover maintainability-drift lane (copy/paste, duplication, refactor and churn of the PR's commits against the repo's own baseline)."
+    required: false
+    default: "true"
+  turnover-baseline:
+    description: >-
+      Path of the turnover baseline file. Built from full history on the first run when
+      absent (the workflow needs `fetch-depth: 0` for that); commit it or restore it with
+      actions/cache so later runs only classify new commits.
+    required: false
+    default: ".turnover/baseline.json"
+  block-on-turnover-drift:
+    description: "Fail the job when the PR drifts past the turnover policy (advisory by default)."
+    required: false
+    default: "false"
+  turnover-baseline-url:
+    description: >-
+      Mergestro plane URL for the turnover baseline service. When set, the baseline is fetched
+      from the plane before the run (no cache or full clone needed once one exists) and pushed
+      back after `slop-gate baseline`. Authenticated with `metrics-token`.
+    required: false
+    default: ""
   version:
     description: "Release tag of the prebuilt slop-gate binary to install."
     required: false
@@ -238,6 +260,38 @@ runs:
         echo "merge_base=$MB" >> "$GITHUB_OUTPUT"
         echo "Diffing against merge-base $MB (of $BASE)"
 
+    - name: Ensure a turnover baseline
+      if: ${{ inputs.turnover == 'true' }}
+      shell: bash
+      env:
+        MERGE_BASE: ${{ steps.base.outputs.merge_base }}
+        BASELINE_URL: ${{ inputs.turnover-baseline-url }}
+        METRICS_TOKEN: ${{ inputs.metrics-token }}
+      run: |
+        set -euo pipefail
+        if [ -n "${METRICS_TOKEN}" ]; then echo "::add-mask::${METRICS_TOKEN}"; fi
+        if [ -f "${{ inputs.turnover-baseline }}" ]; then exit 0; fi
+        # The plane's baseline service first: a stored file means no walk at all.
+        if [ -n "${BASELINE_URL}" ]; then
+          mkdir -p "$(dirname "${{ inputs.turnover-baseline }}")"
+          if curl -sfS --connect-timeout 10 --max-time 120 -H "Authorization: Bearer ${METRICS_TOKEN}" \
+               "${BASELINE_URL%/}/v1/turnover/baseline/${GITHUB_REPOSITORY}" \
+               -o "${{ inputs.turnover-baseline }}"; then
+            echo "turnover baseline fetched from the plane"; exit 0
+          fi
+          rm -f "${{ inputs.turnover-baseline }}"
+        fi
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+          echo "::warning::no turnover baseline at ${{ inputs.turnover-baseline }} and the checkout is shallow — the lane will be skipped. Use fetch-depth: 0 (or the plane's baseline service / a committed file) to enable it."
+          exit 0
+        fi
+        echo "::notice::building the turnover baseline at ${{ inputs.turnover-baseline }} from full history"
+        args=( baseline --repo . --base "$MERGE_BASE" --head HEAD --turnover-baseline "${{ inputs.turnover-baseline }}" )
+        [ "${{ inputs.config }}" != "" ] && args+=( --config "${{ inputs.config }}" )
+        # With a plane configured the freshly built file is pushed, so the next runner fetches it.
+        [ -n "${BASELINE_URL}" ] && args+=( --turnover-baseline-url "${BASELINE_URL}" )
+        slop-gate "${args[@]}"
+
     - name: Run slop gate
       shell: bash
       env:
@@ -246,6 +300,11 @@ runs:
         # The true PR head (GITHUB_SHA is the merge commit) — sharpens the
         # per-PR survivor tracking in the validation telemetry.
         PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        # The PR's author, which GITHUB_ACTOR is not: on a re-run or a merge-train run the
+        # actor is whoever/whatever triggered the workflow, often a bot. Mergestro's
+        # per-active-developer rollup reads this field. Derived from the event payload so it
+        # needs no configuration; empty on non-PR events, which simply omits the field.
+        PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         # Read by slop-gate's emitter as the Bearer token for the metrics-url POST.
         METRICS_TOKEN: ${{ inputs.metrics-token }}
       run: |
@@ -267,6 +326,10 @@ runs:
         [ "${{ inputs.test-changed-package-only }}" = "true" ] && args+=( --test-changed-package-only )
         [ "${{ inputs.test-tool }}" != "" ] && args+=( --test-tool "${{ inputs.test-tool }}" )
         [ "${{ inputs.block-on-pattern }}" != "" ] && args+=( --block-on-pattern "${{ inputs.block-on-pattern }}" )
+        [ "${{ inputs.turnover }}" != "true" ] && args+=( --no-turnover )
+        [ "${{ inputs.turnover }}" = "true" ] && args+=( --turnover-baseline "${{ inputs.turnover-baseline }}" )
+        [ "${{ inputs.block-on-turnover-drift }}" = "true" ] && args+=( --block-on-turnover-drift )
+        [ "${{ inputs.turnover-baseline-url }}" != "" ] && args+=( --turnover-baseline-url "${{ inputs.turnover-baseline-url }}" )
         [ "${{ inputs.comment }}" = "true" ] && args+=( --comment )
         [ "${{ inputs.metrics-file }}" != "" ] && args+=( --metrics-file "${{ inputs.metrics-file }}" )
         [ "${{ inputs.metrics-url }}" != "" ] && args+=( --metrics-url "${{ inputs.metrics-url }}" )

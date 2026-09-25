@@ -1,0 +1,103 @@
+// Jenkins (declarative, multibranch) — behavioral merge gate, plane telemetry,
+// and a PR comment on whichever forge the multibranch source points at.
+//
+// Copy into your repo's `Jenkinsfile`, or `load` it from a shared library.
+// Requires a **Multibranch Pipeline** job so that CHANGE_ID / CHANGE_TARGET are
+// populated; on an ordinary pipeline job they are null and the gate has no PR
+// to diff against or comment on.
+//
+// ── Why the env block is the whole trick ─────────────────────────────────────
+//
+// The gate discovers its PR context from the environment, and its discovery
+// order is PR_NUMBER → GITHUB_REF → GITHUB_EVENT_PATH. Jenkins sets none of
+// those, but it does set CHANGE_ID and CHANGE_TARGET — so mapping four
+// variables by hand is the entire integration. There is no Jenkins-specific
+// code in the gate and none is needed:
+//
+//   PR_NUMBER         ← CHANGE_ID          (read first, before any ref parsing)
+//   GITHUB_REPOSITORY ← owner/repo         (the gate splits on the slash)
+//   GITHUB_API_URL    ← your forge's API origin
+//   GITHUB_TOKEN      ← a credential with permission to comment
+//
+// GITHUB_API_URL is what makes this portable: point it at
+// `https://api.github.com` for GitHub, `https://<host>/api/v3` for GitHub
+// Enterprise Server, or `https://<host>/api/v1` for Gitea/Forgejo, whose
+// comment endpoints have the same shape. **GitLab is not reachable this way** —
+// its notes API differs in path, verb and auth header, so use the artifact +
+// curl pattern in `gitlab-ci.yml` instead.
+//
+// ── Jenkins credentials to create ────────────────────────────────────────────
+//
+//   mergestro-forge-token   Secret text — forge token that may comment on PRs.
+//   mergestro-ingest-token  Secret text — the plane's per-tenant ingest key.
+//
+// And one plain string, inline below: MERGESTRO_INGEST_URL.
+
+pipeline {
+  agent {
+    docker {
+      // The image bakes in the Rust toolchain + cargo-mutants.
+      // `--entrypoint=''` because the image's entrypoint IS the binary and
+      // Jenkins needs to run its own shell in the container.
+      image 'mancube/mergestro-gate:0.5'
+      args  '--entrypoint="" --user root'
+    }
+  }
+
+  options {
+    // A gate that runs twice on one push spends CI minutes to reach the same
+    // verdict, and mutation minutes are the expensive kind.
+    disableConcurrentBuilds()
+    timeout(time: 45, unit: 'MINUTES')
+  }
+
+  environment {
+    // ── The four variables the gate's PR discovery reads ──
+    PR_NUMBER         = "${env.CHANGE_ID}"
+    GITHUB_REPOSITORY = 'your-org/your-repo'
+    GITHUB_API_URL    = 'https://api.github.com'
+    GITHUB_TOKEN      = credentials('mergestro-forge-token')
+
+    // ── Plane telemetry ──
+    METRICS_TOKEN        = credentials('mergestro-ingest-token')
+    MERGESTRO_INGEST_URL = 'https://plane.example.com/v1/ingest'
+  }
+
+  stages {
+    stage('Behavioral gate') {
+      // Nothing to diff and nothing to comment on outside a PR build.
+      when { changeRequest() }
+      steps {
+        sh '''
+          set -eu
+          # Jenkins checks out as a different uid than the container user.
+          git config --global --add safe.directory "$PWD"
+          # The target branch has to exist locally for the merge-base.
+          git fetch --no-tags origin "$CHANGE_TARGET"
+
+          slop-gate \
+            --repo . \
+            --base "origin/$CHANGE_TARGET" \
+            --max-survivors 0 \
+            --max-per-function 5 \
+            --jobs 4 \
+            --comment \
+            --metrics-url "$MERGESTRO_INGEST_URL"
+            # --advisory                      # report without blocking
+            # --block-on-zero-assertion       # also gate assertion-free tests
+        '''
+      }
+    }
+  }
+
+  post {
+    // The gate's exit codes are a contract: 0 pass, 2 blocked, 1 operational
+    // failure. Jenkins collapses every non-zero into FAILURE, so say which one
+    // it was — "the gate blocked" and "the gate could not run" send a developer
+    // to completely different places.
+    failure {
+      echo 'Mergestro gate did not pass. Exit 2 = blocked (survivors over budget); ' +
+           'exit 1 = operational failure (the lane could not run — check the log above).'
+    }
+  }
+}

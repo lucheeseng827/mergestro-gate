@@ -1,0 +1,101 @@
+# A service a few weeks old: some of it exists, most of it is the plan.
+#
+# This is the shape you want if you can get it. Almost every milestone below is OPEN, so the
+# tree starts near zero and fills in as the work lands — which is what a progression tree is
+# for, and what a plan retro-fitted to a five-year-old repository can never get back.
+#
+# Copy it, point the globs at your layout, and delete what you are not planning.
+
+version: 1
+title: Parcel API — first release
+season: 2026 H1
+
+# GitHub's squash subject. `slop-gate progression init` detects this for you; set it by hand
+# only if your forge marks merges differently (GitLab writes `See merge request …!123`).
+pr_pattern: '\(#(\d+)\)'
+
+nodes:
+  # Done on day one, and that is fine: a plan needs a root. Keep the finished part of the tree
+  # SMALL — one or two milestones — or the percentage stops meaning anything.
+  - id: foundations
+    title: Foundations
+    summary: It builds, it is configured, and CI says so.
+    parts:
+      - id: skeleton
+        title: The service compiles and runs
+        xp: 10
+        evidence: { paths: ["src/**"] }
+      - id: ci
+        title: CI runs on every push
+        xp: 15
+        evidence: { paths: [".github/workflows/**"] }
+
+  - id: ingest
+    title: Ingest pipeline
+    summary: Take a batch, reject the bad ones at the door, survive a burst.
+    requires: [foundations]
+    # A node-level `paths` scopes every part below that does not narrow further.
+    paths: ["src/ingest/**"]
+    parts:
+      - id: parse
+        title: Parse a batch
+        xp: 20
+        evidence: { paths: ["src/ingest/parse.rs"] }
+      - id: validate
+        title: Reject a malformed batch at the door
+        xp: 20
+        evidence: { paths: ["src/ingest/validate.rs"] }
+      - id: backpressure
+        title: Survive a burst without dropping work
+        xp: 25
+        # No `paths` of its own, so it inherits the node's — "three commits anywhere in the
+        # ingest tree whose message mentions backpressure or the queue depth".
+        evidence: { subject: "backpressure|queue depth", commits: 3 }
+
+  - id: api
+    title: Public API
+    requires: [foundations]
+    paths: ["src/api/**"]
+    parts:
+      - id: routes
+        title: Routes and their contract
+        xp: 25
+        # `commits: 0` turns this into a PR-only rule: two distinct merged PRs, however many
+        # commits each carried. Only meaningful when `pr_pattern` matches your merges.
+        evidence: { paths: ["src/api/**"], commits: 0, prs: 2 }
+      - id: errors
+        title: Errors a caller can act on
+        xp: 15
+        evidence: { paths: ["src/api/error.rs"] }
+      - id: ratelimit
+        title: Rate limiting
+        xp: 20
+        evidence: { paths: ["src/api/ratelimit.rs"] }
+
+  - id: operability
+    title: Somebody else can run it
+    requires: [ingest, api]
+    parts:
+      - id: metrics
+        title: It says what it is doing
+        xp: 20
+        evidence: { paths: ["src/telemetry/**"] }
+      - id: runbook
+        title: The runbook exists
+        xp: 15
+        evidence: { paths: ["docs/runbook.md"] }
+      - id: drill
+        title: A restore drill was actually held
+        xp: 20
+        # Work no commit proves. Until it happens, point the rule at the note the drill will
+        # leave behind — an open rule is a legal rule, and it keeps the milestone visibly open.
+        # When it happens and nothing was written down, change this line to `manual: true`,
+        # which CLOSES the part by hand and says so in the diff. `manual: false` is not a
+        # placeholder: an evidence block that selects nothing at all is rejected outright.
+        evidence: { paths: ["docs/drills/**"], subject: "restore drill" }
+
+  # No parts: a marker. Done as soon as everything it requires is done, which is how a plan
+  # says "and then we shipped" without inventing a task to tick.
+  - id: ga
+    title: GA
+    requires: [operability]

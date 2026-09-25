@@ -37,8 +37,10 @@ use crate::severity::SeverityCounts;
 /// older records still parse; to 5 with the convention lane
 /// (`convention_score`, `convention_findings`); to 6 with the `record_type`
 /// ingest discriminator (always `"slop"`), so an emitted line drops straight
-/// into Mergestro's `IngestRecord::Slop` envelope.
-pub const SCHEMA_VERSION: u32 = 6;
+/// into Mergestro's `IngestRecord::Slop` envelope; to 7 with `pr_author`, the
+/// PR's author as distinct from `actor` (the workflow triggerer) — the identity
+/// a per-active-developer rollup needs and `actor` cannot supply.
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// The `record_type` tag every gate record carries. A free fn so it can name the
 /// `#[serde(default = ...)]` for records written before v6 (which had no tag).
@@ -72,6 +74,12 @@ pub struct RunMetrics {
     pub run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
+    /// The PR's **author**, which `actor` is not: `actor` is `GITHUB_ACTOR`, the workflow
+    /// triggerer, and on a merge-queue re-run that is the bot. Sourced from `PR_AUTHOR`
+    /// (the Action fills it from the pull-request payload). Optional everywhere, so a
+    /// local run or an un-wired CI simply omits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_author: Option<String>,
 
     /// `"blocking"` (the gate can fail the build) or `"advisory"`.
     pub mode: String,
@@ -125,6 +133,13 @@ pub struct RunMetrics {
     #[serde(default)]
     pub convention_findings: usize,
 
+    // ── Turnover lane (turnover) ───────────────────────────────────────────
+    /// The change's maintainability drift, when the lane ran. The full `turnover`
+    /// record travels as its own JSON line beside this one (see
+    /// [`turnover_record_line`]); this is the summary the slop trend reads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turnover: Option<TurnoverMetrics>,
+
     pub duration_secs: f64,
 }
 
@@ -145,6 +160,7 @@ impl RunMetrics {
             head_sha: ctx.head_sha.clone(),
             run_id: ctx.run_id.clone(),
             actor: ctx.actor.clone(),
+            pr_author: ctx.pr_author.clone(),
             mode: if cfg.block_on_survivors {
                 "blocking".to_string()
             } else {
@@ -176,6 +192,15 @@ impl RunMetrics {
             convention_score: report.convention.as_ref().map(|s| s.score),
             convention_findings: report.convention.as_ref().map_or(0, |s| s.findings.len()),
             duration_secs: report.duration_secs,
+            turnover: report.turnover.as_ref().map(|t| TurnoverMetrics {
+                verdict: t.status.clone(),
+                mode: t.mode.clone(),
+                window_added: t.window.counts.added,
+                window_commits: t.window.commits,
+                ratios: t.window.ratios,
+                baseline_ratios: t.baseline.ratios,
+                failed_checks: t.failed_checks.clone(),
+            }),
         }
     }
 
@@ -198,6 +223,7 @@ pub struct RunContext {
     pub head_sha: Option<String>,
     pub run_id: Option<String>,
     pub actor: Option<String>,
+    pub pr_author: Option<String>,
 }
 
 impl RunContext {
@@ -211,12 +237,60 @@ impl RunContext {
             head_sha: env_nonempty("PR_HEAD_SHA").or_else(|| env_nonempty("GITHUB_SHA")),
             run_id: env_nonempty("GITHUB_RUN_ID"),
             actor: env_nonempty("GITHUB_ACTOR"),
+            pr_author: env_nonempty("PR_AUTHOR"),
         }
     }
 }
 
+/// The turnover lane's own ingest record (`record_type: "turnover"`), as one JSON line, when
+/// the lane measured something. Skipped lanes emit nothing: a run that decided nothing must
+/// not become a point on a trend.
+pub fn turnover_record_line(report: &GateReport, ctx: &RunContext) -> Option<String> {
+    let t = report.turnover.as_ref()?;
+    let verdict = t.verdict.as_ref()?;
+    let head_sha = ctx
+        .head_sha
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| t.head_sha.clone());
+    let identity = turnover_gate::record::Identity {
+        repo: ctx.repo.clone().unwrap_or_else(|| "unknown".to_string()),
+        pr: ctx.pr,
+        head_sha,
+        run_id: ctx
+            .run_id
+            .clone()
+            .unwrap_or_else(|| format!("local-{}", ctx.timestamp_unix)),
+        actor: ctx.actor.clone(),
+        pr_author: ctx.pr_author.clone(),
+        timestamp_unix: ctx.timestamp_unix,
+    };
+    let rec =
+        turnover_gate::record::build(identity, t.window_days, verdict, &t.window, &t.baseline);
+    serde_json::to_string(&rec).ok()
+}
+
+/// The turnover summary carried inside the slop record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TurnoverMetrics {
+    /// `pass` | `fail` | `insufficient_sample` | `skipped`.
+    pub verdict: String,
+    pub mode: String,
+    pub window_added: u64,
+    pub window_commits: u64,
+    pub ratios: turnover_core::window::Ratios,
+    pub baseline_ratios: turnover_core::window::Ratios,
+    #[serde(default)]
+    pub failed_checks: Vec<String>,
+}
+
 /// Append a run record as one JSON line to `path`, creating it if needed.
 pub fn append_jsonl(path: &Path, metrics: &RunMetrics) -> Result<()> {
+    append_line(path, &metrics.to_json_line())
+}
+
+/// Append one pre-serialised JSON line to `path`, creating it if needed.
+pub fn append_line(path: &Path, line: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
@@ -228,8 +302,7 @@ pub fn append_jsonl(path: &Path, metrics: &RunMetrics) -> Result<()> {
         .append(true)
         .open(path)
         .with_context(|| format!("opening metrics file {}", path.display()))?;
-    writeln!(file, "{}", metrics.to_json_line())
-        .with_context(|| format!("writing metrics to {}", path.display()))?;
+    writeln!(file, "{line}").with_context(|| format!("writing metrics to {}", path.display()))?;
     Ok(())
 }
 
@@ -239,6 +312,13 @@ pub const METRICS_POST_TIMEOUT: std::time::Duration = std::time::Duration::from_
 
 /// POST a run record to a telemetry endpoint (best-effort; small + synchronous).
 pub fn post(url: &str, token: Option<&str>, metrics: &RunMetrics) -> Result<()> {
+    post_lines(url, token, &[metrics.to_json_line()])
+}
+
+/// POST several JSON-Lines records in ONE request. Mergestro's `/v1/ingest` takes a batch
+/// and is idempotent per record, so the slop record and the turnover record travel together
+/// and a retry never double-counts either.
+pub fn post_lines(url: &str, token: Option<&str>, lines: &[String]) -> Result<()> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(METRICS_POST_TIMEOUT)
         .timeout_read(METRICS_POST_TIMEOUT)
@@ -251,7 +331,9 @@ pub fn post(url: &str, token: Option<&str>, metrics: &RunMetrics) -> Result<()> 
     if let Some(token) = token {
         req = req.set("Authorization", &format!("Bearer {token}"));
     }
-    req.send_string(&metrics.to_json_line())
+    let mut body = lines.join("\n");
+    body.push('\n');
+    req.send_string(&body)
         .with_context(|| format!("posting metrics to {url}"))?;
     Ok(())
 }
@@ -323,6 +405,86 @@ mod tests {
     }
 
     #[test]
+    fn turnover_lane_travels_as_a_summary_and_as_its_own_record_line() {
+        use turnover_core::policy::{evaluate, Policy};
+        use turnover_core::signals::Counts;
+        use turnover_core::window::{Aggregate, Ratios};
+        let agg = |added: u64, pasted: u64| {
+            let counts = Counts {
+                added,
+                copy_pasted: pasted,
+                ..Default::default()
+            };
+            Aggregate {
+                counts,
+                ratios: Ratios::of(&counts),
+                commits: 2,
+                authors: 1,
+                ..Default::default()
+            }
+        };
+        let window = agg(1000, 300);
+        let baseline = agg(10_000, 800);
+        let verdict = evaluate(&Policy::default(), Some(&baseline), &window);
+        let mut report = GateReport::new("main", "HEAD");
+        report.turnover = Some(crate::turnover_lane::TurnoverLane {
+            status: "fail".into(),
+            mode: "blocking".into(),
+            reason: None,
+            scope: "pr".into(),
+            window_days: 90,
+            head_sha: "lanehead".into(),
+            window,
+            baseline,
+            has_baseline: true,
+            failed_checks: vec!["copy_paste".into()],
+            messages: vec!["copy_paste rose".into()],
+            verdict: Some(verdict),
+            markdown: String::new(),
+            text: String::new(),
+        });
+        let ctx = RunContext {
+            timestamp_unix: 1_760_000_000,
+            repo: Some("acme/api".into()),
+            pr: Some(7),
+            head_sha: None,
+            run_id: Some("r1".into()),
+            actor: None,
+            pr_author: Some("alice".into()),
+        };
+        let m = RunMetrics::from_report(&report, &Config::default(), &ctx);
+        let t = m.turnover.as_ref().expect("summary present");
+        assert_eq!(t.verdict, "fail");
+        assert_eq!(t.window_added, 1000);
+        assert_eq!(t.ratios.copy_paste, Some(0.3));
+        assert_eq!(t.failed_checks, vec!["copy_paste"]);
+        // The slop line still parses as a slop record with the summary embedded.
+        let v: serde_json::Value = serde_json::from_str(&m.to_json_line()).unwrap();
+        assert_eq!(v["record_type"], "slop");
+        assert_eq!(v["turnover"]["verdict"], "fail");
+
+        let line = turnover_record_line(&report, &ctx).expect("record line");
+        let r: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(r["record_type"], "turnover");
+        assert_eq!(r["repo"], "acme/api");
+        assert_eq!(r["pr"], 7);
+        assert_eq!(r["run_id"], "r1");
+        assert_eq!(r["pr_author"], "alice");
+        assert_eq!(
+            r["head_sha"], "lanehead",
+            "falls back to the lane's head when the env has none"
+        );
+        assert_eq!(r["verdict"], "fail");
+        assert_eq!(r["window_days"], 90);
+        assert_eq!(r["failed_checks"][0], "copy_paste");
+
+        // A skipped lane emits no record: it decided nothing.
+        let mut skipped = report.clone();
+        skipped.turnover.as_mut().unwrap().verdict = None;
+        assert!(turnover_record_line(&skipped, &ctx).is_none());
+    }
+
+    #[test]
     fn from_report_maps_mode_verdict_and_counts() {
         let mut report = GateReport::new("base", "head");
         report.changed_rust_files = vec!["src/x.rs".into()];
@@ -342,11 +504,15 @@ mod tests {
             pr: Some(42),
             head_sha: Some("deadbeef".into()),
             run_id: Some("99".into()),
-            actor: Some("octocat".into()),
+            // The bot triggered the run; the human wrote the PR. Billing needs the latter.
+            actor: Some("mergestro-bot".into()),
+            pr_author: Some("octocat".into()),
         };
         let m = RunMetrics::from_report(&report, &cfg, &ctx);
         assert_eq!(m.mode, "blocking");
         assert_eq!(m.verdict, "block");
+        assert_eq!(m.actor.as_deref(), Some("mergestro-bot"));
+        assert_eq!(m.pr_author.as_deref(), Some("octocat"));
         assert_eq!(m.survivors, 1);
         assert_eq!(m.survivor_fingerprints.len(), 1);
         assert_eq!(m.pr, Some(42));

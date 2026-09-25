@@ -91,6 +91,93 @@ pub struct Config {
     /// advisory — it scores and reports, never gates.
     #[serde(default)]
     pub block_on_pattern: Vec<String>,
+
+    // ── MCP lane: gate a first-party MCP server ──────────────────────────────
+    /// First-party MCP servers this repository ships. Empty (the default) means
+    /// the lane never runs; declaring one opts the repo in, and from then on a
+    /// PR that touches that server is probed before it can merge.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerTarget>,
+    /// How strict the MCP lane is: `never` (report only), `critical` (default —
+    /// block on a Critical failure, the tier that would deny the server
+    /// admission), `unproven` (also block when a Critical check could not be
+    /// run), or `any` (block on any failure).
+    ///
+    /// This is passed straight to the prober, which owns the check catalog and
+    /// its severities — the gate never carries its own copy of which ids are
+    /// Critical. A skipped check never blocks at any setting.
+    #[serde(default = "default_mcp_fail_on")]
+    pub mcp_fail_on: String,
+    /// The prober binary the MCP lane drives. A bare name is resolved on PATH.
+    #[serde(default = "default_specprobe_bin")]
+    pub specprobe_bin: String,
+
+    // ── Turnover lane (turnover): longitudinal maintainability gate ───────
+    /// The `turnover:` block — baseline path, whether drift blocks, and the
+    /// turnover policy itself (`gate` / `thresholds` / `drift` / `signals` /
+    /// `churn` / `walk`, the same keys as `turnover.toml`).
+    pub turnover: crate::turnover_lane::TurnoverConfig,
+}
+
+/// One first-party MCP server the gate probes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpServerTarget {
+    /// Label used in the report and the PR comment.
+    pub name: String,
+    /// Repo-relative path prefixes whose change puts this server in scope. The
+    /// lane is expensive, so it only runs when the diff touches one of these;
+    /// matching is per path segment, so `servers/acme` does not claim
+    /// `servers/acme-unrelated`.
+    pub paths: Vec<String>,
+    /// Repo-relative working directory for the build and the probe. Defaults to
+    /// the repository root. Must stay inside the checkout — a PR can edit this
+    /// file, and the lane must not become a way to run commands outside it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    /// Optional command run before probing (program first), e.g.
+    /// `["npm", "run", "build"]`. A failing build blocks: the gate cannot
+    /// certify a server it could not produce.
+    #[serde(default)]
+    pub build: Vec<String>,
+    /// The server command the prober spawns (program first). Arguments are
+    /// passed as a JSON array, never a shell string, so a path with a space in
+    /// it stays one argument.
+    pub command: Vec<String>,
+    /// The MCP revision to probe against. This also selects which checks run:
+    /// `2026-07-28` or later probes the stateless lane, anything earlier the
+    /// session lane. Checks outside the era skip rather than failing.
+    #[serde(default = "default_spec_version")]
+    pub spec_version: String,
+    /// Per-exchange deadline in seconds. A hang is a failure, so this bounds
+    /// the whole probe.
+    #[serde(default = "default_mcp_timeout_secs")]
+    pub timeout_secs: u64,
+    /// Name of a tool on this server whose call raises an elicitation. Without
+    /// it the elicitation check skips — the name cannot be discovered from the
+    /// wire, and guessing one would score an `unknown tool` error as a pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub elicit_tool: Option<String>,
+}
+
+/// The accepted `mcp_fail_on` values. Kept as strings rather than an enum
+/// because the value is passed through to the prober verbatim, and the prober
+/// is the component that defines them.
+pub const MCP_FAIL_ON: [&str; 4] = ["never", "critical", "unproven", "any"];
+
+fn default_mcp_fail_on() -> String {
+    "critical".to_string()
+}
+
+fn default_specprobe_bin() -> String {
+    "specprobe".to_string()
+}
+
+fn default_spec_version() -> String {
+    "2025-11-25".to_string()
+}
+
+fn default_mcp_timeout_secs() -> u64 {
+    20
 }
 
 /// The recognised pattern-lane names for `block_on_pattern` (besides rule ids).
@@ -130,6 +217,10 @@ impl Default for Config {
                 "-q".to_string(),
             ],
             block_on_pattern: Vec::new(),
+            mcp_servers: Vec::new(),
+            mcp_fail_on: default_mcp_fail_on(),
+            specprobe_bin: default_specprobe_bin(),
+            turnover: crate::turnover_lane::TurnoverConfig::default(),
         }
     }
 }
@@ -209,6 +300,88 @@ impl Config {
             anyhow::ensure!(
                 is_lane || is_rule_shaped,
                 "invalid --block-on-pattern `{target}` (expected a lane {PATTERN_LANES:?} or a rule id like `hardcoded-secret`)"
+            );
+        }
+
+        // MCP lane. Every failure here is a misconfiguration that would
+        // otherwise surface as a probe of the wrong thing, or of nothing.
+        anyhow::ensure!(
+            MCP_FAIL_ON.contains(&self.mcp_fail_on.trim()),
+            "invalid mcp_fail_on `{}` (expected one of {MCP_FAIL_ON:?})",
+            self.mcp_fail_on
+        );
+        anyhow::ensure!(
+            !self.specprobe_bin.trim().is_empty(),
+            "specprobe_bin must not be empty"
+        );
+        let mut seen: Vec<&str> = Vec::new();
+        for t in &self.mcp_servers {
+            let name = t.name.trim();
+            anyhow::ensure!(!name.is_empty(), "every mcp_servers entry needs a name");
+            anyhow::ensure!(
+                !seen.contains(&name),
+                "duplicate mcp_servers name `{name}` — names label the report, so they must be unique"
+            );
+            seen.push(name);
+            anyhow::ensure!(
+                !t.paths.is_empty(),
+                "mcp_servers `{name}` needs at least one path — without one the lane could \
+                 never tell whether a diff touched it, so it would never run"
+            );
+            for p in &t.paths {
+                anyhow::ensure!(
+                    crate::mcp_gate::is_safe_relative(p.trim_matches('/')),
+                    "mcp_servers `{name}` path `{p}` must be repo-relative with no `..`"
+                );
+            }
+            anyhow::ensure!(
+                !t.command.is_empty(),
+                "mcp_servers `{name}` needs a command (the server to spawn)"
+            );
+            if let Some(dir) = &t.dir {
+                anyhow::ensure!(
+                    crate::mcp_gate::is_safe_relative(dir),
+                    "mcp_servers `{name}` dir `{dir}` must be repo-relative with no `..` — \
+                     this file is editable by a pull request, so the lane stays in the checkout"
+                );
+            }
+            anyhow::ensure!(
+                t.timeout_secs >= 1,
+                "mcp_servers `{name}` timeout_secs must be >= 1"
+            );
+            anyhow::ensure!(
+                !t.spec_version.trim().is_empty(),
+                "mcp_servers `{name}` spec_version must not be empty"
+            );
+        }
+        // Same reasoning as `metrics_url`: the turnover baseline service is authenticated with
+        // the METRICS_TOKEN bearer, so the URL a PR-editable config names must be HTTPS with a
+        // host, or the tenant token goes out in cleartext.
+        if let Some(url) = &self.turnover.baseline_url {
+            let host = url
+                .trim()
+                .trim_end_matches('/')
+                .strip_prefix("https://")
+                .unwrap_or("");
+            anyhow::ensure!(
+                !host.is_empty()
+                    && !host.starts_with('/')
+                    && !host.starts_with('?')
+                    && !host.starts_with('#'),
+                "turnover.baseline_url must be an https:// URL with a host (got `{url}`)"
+            );
+            // This is the plane's *base*: the client appends `/v1/turnover/baseline/<repo>`
+            // itself, and the plane serves that route at its own root. A base carrying a path
+            // therefore requests somewhere that does not exist — and fails silently, which is
+            // why this is a validation error rather than a runtime surprise:
+            // `turnover_gate::remote::fetch` maps the resulting 404 onto `Ok(false)`, meaning
+            // "the plane holds no baseline", so the lane would report `not measured` forever,
+            // indistinguishable from a repository nobody has seeded. The likely typo is the
+            // telemetry URL, which ends in `/v1/ingest`.
+            anyhow::ensure!(
+                !host.contains('/'),
+                "turnover.baseline_url must be the plane's base URL with no path — the client \
+                 appends /v1/turnover/baseline/<repo> itself (got `{url}`)"
             );
         }
         Ok(())
@@ -338,5 +511,110 @@ mod tests {
             ..Config::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    fn mcp_target() -> McpServerTarget {
+        McpServerTarget {
+            name: "acme".into(),
+            paths: vec!["servers/acme".into()],
+            dir: None,
+            build: vec![],
+            command: vec!["node".into(), "server.js".into()],
+            spec_version: "2025-11-25".into(),
+            timeout_secs: 20,
+            elicit_tool: None,
+        }
+    }
+
+    fn cfg_with_mcp(t: McpServerTarget) -> Config {
+        Config {
+            mcp_servers: vec![t],
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn mcp_defaults_gate_on_critical_and_resolve_the_prober_on_path() {
+        // Declaring a server IS the opt-in, so the lane gates from the first run
+        // rather than needing a second flag nobody sets.
+        let cfg = Config::default();
+        assert_eq!(cfg.mcp_fail_on, "critical");
+        assert_eq!(cfg.specprobe_bin, "specprobe");
+        assert!(cfg.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn mcp_server_yaml_fills_its_defaults() {
+        let yaml = "mcp_servers:\n  - name: acme\n    paths: [servers/acme]\n    command: [node, server.js]\n";
+        let cfg: Config = serde_yaml::from_str(yaml).unwrap();
+        cfg.validate()
+            .expect("a minimal server entry must validate");
+        let t = &cfg.mcp_servers[0];
+        assert_eq!(t.spec_version, "2025-11-25");
+        assert_eq!(t.timeout_secs, 20);
+        assert!(t.build.is_empty());
+        assert_eq!(t.dir, None);
+    }
+
+    #[test]
+    fn validate_rejects_an_unknown_mcp_threshold() {
+        let cfg = Config {
+            mcp_fail_on: "warn".into(),
+            ..Config::default()
+        };
+        let e = cfg.validate().unwrap_err().to_string();
+        assert!(e.contains("warn") && e.contains("critical"), "{e}");
+    }
+
+    #[test]
+    fn validate_rejects_a_server_that_could_never_be_triggered() {
+        // No paths means the lane can never tell whether a diff touched this
+        // server — it would sit in the config looking like coverage and never
+        // run once.
+        let mut t = mcp_target();
+        t.paths.clear();
+        let e = cfg_with_mcp(t).validate().unwrap_err().to_string();
+        assert!(e.contains("at least one path"), "{e}");
+    }
+
+    #[test]
+    fn validate_rejects_a_server_with_no_command() {
+        let mut t = mcp_target();
+        t.command.clear();
+        let e = cfg_with_mcp(t).validate().unwrap_err().to_string();
+        assert!(e.contains("needs a command"), "{e}");
+    }
+
+    #[test]
+    fn validate_keeps_the_lane_inside_the_checkout() {
+        // This file is editable by a pull request. A `dir` of `../../` would
+        // turn the lane into a way to run a build command anywhere on the runner.
+        for bad in ["../elsewhere", "/etc", "servers/../../elsewhere"] {
+            let mut t = mcp_target();
+            t.dir = Some(bad.into());
+            let e = cfg_with_mcp(t).validate().unwrap_err().to_string();
+            assert!(e.contains("repo-relative"), "{bad}: {e}");
+        }
+        let mut ok = mcp_target();
+        ok.dir = Some("servers/acme".into());
+        assert!(cfg_with_mcp(ok).validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_server_names() {
+        let cfg = Config {
+            mcp_servers: vec![mcp_target(), mcp_target()],
+            ..Config::default()
+        };
+        let e = cfg.validate().unwrap_err().to_string();
+        assert!(e.contains("duplicate"), "{e}");
+    }
+
+    #[test]
+    fn validate_rejects_a_zero_probe_timeout() {
+        let mut t = mcp_target();
+        t.timeout_secs = 0;
+        let e = cfg_with_mcp(t).validate().unwrap_err().to_string();
+        assert!(e.contains("timeout_secs"), "{e}");
     }
 }

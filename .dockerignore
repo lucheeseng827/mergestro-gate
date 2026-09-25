@@ -2,7 +2,7 @@
 target/
 **/target/
 fixtures/**/.git/
-.git/
+**/.git/
 node_modules/
 .stryker-tmp/
 bench/out/

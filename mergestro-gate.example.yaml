@@ -77,3 +77,70 @@ block_on_debt: false
 #   - security             # any security anti-pattern blocks
 #   - hardcoded-secret     # or gate a single rule across all lanes
 #   - unknown-crate-import
+
+# ── MCP lane: gate your own MCP server ───────────────────────────────────────
+# Declare the MCP servers this repository ships and the gate will build them,
+# probe them over stdio with `specprobe`, and fail the merge when one regresses.
+# Nothing here runs unless you declare a server AND the diff touches its paths —
+# probing is expensive, so a docs-only PR never pays for it.
+#
+# Requires the `specprobe` binary on PATH (or set specprobe_bin below).
+#
+# mcp_servers:
+#   - name: acme                       # label in the report and the PR comment
+#     paths: [servers/acme]            # a diff touching these puts it in scope
+#     command: [node, servers/acme/dist/server.js]   # the server to spawn
+#     build: [npm, run, build]         # optional; a failing build blocks
+#     dir: servers/acme                # optional cwd, repo-relative (no `..`)
+#     spec_version: "2025-11-25"       # 2026-07-28+ probes the stateless lane
+#     timeout_secs: 20                 # a hang is a failure, so this bounds it
+#     elicit_tool: ask_user            # optional; without it the elicitation
+#                                      # check skips rather than guessing a name
+
+# How strict the lane is. Declaring a server IS the opt-in, so this gates from
+# the first run:
+#   never     — report only, never block
+#   critical  — (default) block on a Critical failure: the tier that would deny
+#               the server admission to an allowlist
+#   unproven  — also block when a Critical check could not be run at all
+#   any       — block on any failure, at any severity
+#
+# A *skipped* check never blocks, at any setting. Over stdio roughly a third of
+# the catalog cannot be expressed (the header and cross-principal checks need an
+# HTTP layer) and era-specific checks do not apply to the other era; those come
+# back as skips, are reported with their count, and are weightless.
+mcp_fail_on: critical
+
+# The prober binary. A bare name is resolved on PATH.
+# specprobe_bin: specprobe
+
+# ── Turnover lane: longitudinal maintainability drift ────────────────────────
+# Judges the PR's commits — copy/paste, duplicated block, refactor (moved lines)
+# and two-week churn, each over significant added lines — against the
+# repository's OWN baseline. The baseline is one classified row per commit in
+# history; build it once with `slop-gate baseline` (needs full history), commit
+# or cache the file, and every run refreshes it with the new commits.
+# Advisory by default: the section always renders in the PR comment; set
+# block_on_drift to fail the build on a drifted verdict. A missing baseline is a
+# skipped lane with a hint, never a block.
+turnover:
+  enabled: true
+  baseline: .turnover/baseline.json
+  block_on_drift: false
+  # The turnover policy, verbatim from turnover.toml (every key optional):
+  gate:
+    min_added_lines: 200      # below this the lane reports "insufficient sample" and passes
+    window_days: 90           # only used by the standalone trailing-window mode
+  drift:                      # allowed movement from the baseline, in ratio points
+    copy_paste_max_rise: 0.05
+    dup_block_max_rise: 0.05
+    churn_max_rise: 0.05
+    refactor_max_drop: 0.05
+  # thresholds:               # optional absolute caps, no defaults
+  #   copy_paste_max: 0.25
+  # signals:                  # classifier settings — changing them rebuilds the baseline
+  #   block_min_lines: 6
+  # churn:
+  #   horizon_days: 14
+  # walk:
+  #   ignore_paths: [vendor, node_modules, generated]

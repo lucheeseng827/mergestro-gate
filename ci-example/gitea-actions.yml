@@ -1,0 +1,77 @@
+# Gitea / Forgejo Actions — behavioral merge gate, plane telemetry, PR comment.
+#
+# Copy into your repo's `.gitea/workflows/` (Gitea) or `.forgejo/workflows/`
+# (Forgejo). Gitea Actions is deliberately GitHub-Actions-compatible, which is
+# why this file looks like `pull_request.yml` and why the gate's own `--comment`
+# has a real chance of working here with no code change at all:
+#
+#   * Gitea sets GITHUB_REPOSITORY, GITHUB_REF (`refs/pull/<n>/head`) and
+#     GITHUB_TOKEN, which is exactly what `github::GithubContext::from_env`
+#     reads;
+#   * Gitea sets GITHUB_API_URL to `<your-gitea>/api/v1`, and Gitea's comment
+#     endpoints live at `…/api/v1/repos/{owner}/{repo}/issues/{n}/comments` —
+#     the same path the gate builds under whatever GITHUB_API_URL it is given.
+#
+# ⚠️ **An earlier version of this file said that compatibility was enough. It was
+# not, and the gate has since been fixed.** Gitea does not accept `Bearer` for a
+# personal access token — its docs reserve that for OAuth2 provider tokens and
+# answer 401/404 otherwise (go-gitea/gitea#31936) — while the gate sent `Bearer`
+# unconditionally. So `--comment` had never worked on any Gitea instance, and
+# because the comment is best-effort by contract it failed as a warning: the
+# verdict stayed correct and the comment silently never appeared.
+#
+# `src/github.rs` now picks the scheme from the API root (`/api/v1` → Gitea), and
+# three tests drive the real comment path against a socket to prove it. What is
+# still unmeasured is a run against an actual Gitea server rather than a fake one.
+#
+# ── Repository secrets / variables to set ────────────────────────────────────
+#
+#   MERGESTRO_INGEST_URL   variable — https://plane.example.com/v1/ingest
+#                          Must be https://; the gate refuses plaintext because
+#                          the request carries the bearer below.
+#   METRICS_TOKEN          secret — the plane's per-tenant ingest key.
+#
+# The built-in GITHUB_TOKEN covers the comment. No extra forge credential.
+
+name: mergestro-gate
+
+on:
+  pull_request:
+
+jobs:
+  behavioral-gate:
+    runs-on: ubuntu-latest
+    container:
+      # The image bakes in the Rust toolchain + cargo-mutants. `--user root`
+      # because Gitea's runner mounts the workspace owned by the runner user and
+      # the image otherwise runs as uid 65532, which cannot write target/.
+      image: mancube/mergestro-gate:0.5
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so the merge-base against the target branch resolves.
+          fetch-depth: 0
+
+      - name: Mergestro behavioral gate
+        env:
+          # Read by `github::GithubContext::from_env` for the PR comment.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Read by the telemetry emitter as the Bearer for --metrics-url.
+          METRICS_TOKEN: ${{ secrets.METRICS_TOKEN }}
+        run: |
+          # Gitea's runner checks out as a different uid than the container
+          # user; without this git refuses to read the repo it just cloned.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch origin "$GITHUB_BASE_REF"
+
+          slop-gate \
+            --repo . \
+            --base "origin/$GITHUB_BASE_REF" \
+            --max-survivors 0 \
+            --max-per-function 5 \
+            --jobs 4 \
+            --comment \
+            --metrics-url "${{ vars.MERGESTRO_INGEST_URL }}"
+            # --advisory                      # report without blocking
+            # --block-on-zero-assertion       # also gate assertion-free tests

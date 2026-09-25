@@ -39,7 +39,25 @@ impl CommandOutput {
 /// Abstracts spawning a child process so the pipeline can be unit-tested.
 pub trait CommandRunner {
     /// Run `program` with `args` in `cwd`, capturing stdout/stderr.
-    fn run(&self, program: &str, args: &[&str], cwd: &Path) -> io::Result<CommandOutput>;
+    fn run(&self, program: &str, args: &[&str], cwd: &Path) -> io::Result<CommandOutput> {
+        self.run_env(program, args, &[], cwd)
+    }
+
+    /// Run `program` with `args` and extra environment variables, in `cwd`.
+    ///
+    /// This is the required method — [`run`](Self::run) is the no-env case — so a runner cannot
+    /// accidentally implement only the env-less path and silently drop the environment. Dropping
+    /// it would not fail loudly: the MCP lane configures `specprobe` entirely through env vars,
+    /// so a discarded environment would probe *nothing* and report a clean run.
+    ///
+    /// Entries are layered over the parent environment, last-wins on duplicate keys.
+    fn run_env(
+        &self,
+        program: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+        cwd: &Path,
+    ) -> io::Result<CommandOutput>;
 
     /// Whether `program` is resolvable on this machine (e.g. `cargo-mutants`).
     fn is_available(&self, program: &str) -> bool;
@@ -49,11 +67,19 @@ pub trait CommandRunner {
 pub struct RealRunner;
 
 impl CommandRunner for RealRunner {
-    fn run(&self, program: &str, args: &[&str], cwd: &Path) -> io::Result<CommandOutput> {
-        let output = Command::new(program)
-            .args(args.iter().map(OsStr::new))
-            .current_dir(cwd)
-            .output()?;
+    fn run_env(
+        &self,
+        program: &str,
+        args: &[&str],
+        env: &[(&str, &str)],
+        cwd: &Path,
+    ) -> io::Result<CommandOutput> {
+        let mut command = Command::new(program);
+        command.args(args.iter().map(OsStr::new)).current_dir(cwd);
+        for (k, v) in env {
+            command.env(k, v);
+        }
+        let output = command.output()?;
         Ok(CommandOutput {
             code: output.status.code(),
             success: output.status.success(),
@@ -82,11 +108,35 @@ pub(crate) mod test_support {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
+    /// One recorded invocation, so a test can assert *what* was run, not only what came back.
+    #[derive(Debug, Clone)]
+    pub struct Invocation {
+        pub program: String,
+        pub args: Vec<String>,
+        pub env: Vec<(String, String)>,
+        /// Where it ran. The MCP lane's containment guarantee — a PR-editable
+        /// config must not steer commands outside the checkout — is only
+        /// provable at the spawn site if the spawn site is recorded.
+        pub cwd: std::path::PathBuf,
+    }
+
+    impl Invocation {
+        /// The value of an env var on this invocation, if it was set.
+        pub fn env_var(&self, key: &str) -> Option<&str> {
+            self.env
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        }
+    }
+
     #[derive(Default)]
     pub struct ScriptedRunner {
         /// FIFO of responses, returned in call order.
         responses: Mutex<VecDeque<io::Result<CommandOutput>>>,
         available: Mutex<Vec<String>>,
+        /// Every invocation, in call order.
+        calls: Mutex<Vec<Invocation>>,
     }
 
     impl ScriptedRunner {
@@ -114,15 +164,61 @@ pub(crate) mod test_support {
             self
         }
 
+        /// A response with an explicit exit code, stdout **and** stderr — the
+        /// shape a tool that fails the build while still printing its report
+        /// has, which neither `push_ok` nor `push_fail` can express.
+        #[allow(dead_code)]
+        pub fn push(&self, code: i32, stdout: &str, stderr: &str) -> &Self {
+            self.responses.lock().unwrap().push_back(Ok(CommandOutput {
+                code: Some(code),
+                success: code == 0,
+                stdout: stdout.to_string(),
+                stderr: stderr.to_string(),
+            }));
+            self
+        }
+
+        /// A spawn failure — the program is not on PATH at all, which is a
+        /// different thing from a program that ran and exited non-zero.
+        #[allow(dead_code)]
+        pub fn push_err(&self, message: &str) -> &Self {
+            self.responses
+                .lock()
+                .unwrap()
+                .push_back(Err(io::Error::other(message.to_string())));
+            self
+        }
+
         #[allow(dead_code)]
         pub fn mark_available(&self, program: &str) -> &Self {
             self.available.lock().unwrap().push(program.to_string());
             self
         }
+
+        /// Every invocation so far, in call order.
+        #[allow(dead_code)]
+        pub fn calls(&self) -> Vec<Invocation> {
+            self.calls.lock().unwrap().clone()
+        }
     }
 
     impl CommandRunner for ScriptedRunner {
-        fn run(&self, _program: &str, _args: &[&str], _cwd: &Path) -> io::Result<CommandOutput> {
+        fn run_env(
+            &self,
+            program: &str,
+            args: &[&str],
+            env: &[(&str, &str)],
+            cwd: &Path,
+        ) -> io::Result<CommandOutput> {
+            self.calls.lock().unwrap().push(Invocation {
+                program: program.to_string(),
+                args: args.iter().map(|a| a.to_string()).collect(),
+                env: env
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect(),
+                cwd: cwd.to_path_buf(),
+            });
             self.responses
                 .lock()
                 .unwrap()

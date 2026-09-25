@@ -1,0 +1,112 @@
+# Mergestro progression tree — every key, annotated.
+#
+#   slop-gate progression --spec mergestro-progression.example.yaml --repo .
+#
+# This is the HAND-AUTHORED half: a sprint, a quarter, a phased build. Nothing here is derived
+# from the log. The repository only ever *closes* what this file declares, which is the whole
+# point — a tree mined purely from history can describe what was done but never what was meant,
+# and a plan with no evidence rule attached is a wiki page that goes stale in a week.
+#
+# Full reference: docs/PROGRESSION.md.
+
+# Spec format. Only `1` is understood; anything else is refused rather than half-read.
+version: 1
+
+# Shown as the heading of the SVG and of the console's canvas.
+title: Acme API — 2026 H1
+
+# Optional free-form period label. "Sprint 14", "FY26 Q2", "PoC → GA".
+season: 2026 H1
+
+# How a commit subject names its PR: one regex, one capture group. The default is GitHub's
+# squash subject, `… (#1234)`. GitLab writes `See merge request !123`; a rebase-merge repo may
+# write nothing at all, in which case leave PR thresholds out and count commits instead.
+pr_pattern: '\(#(\d+)\)'
+
+# Cumulative earned-XP thresholds, ascending, index 0 being level 1. Omit for the built-in
+# eight-band default, whose first band is reachable in a day so a new tree is not stuck at
+# level 1 for a quarter.
+levels: [0, 50, 150, 350, 700, 1200, 2000, 3200]
+
+# Optional: ignore commits older than this. A long-lived repo with a one-quarter plan wants a
+# window; a plan that spans the repo's whole life does not.
+# since_days: 180
+
+nodes:
+  # ── A milestone ────────────────────────────────────────────────────────────────────────────
+  - id: ingest
+    # `id` is stable identity: `requires`, the SVG's element ids and the canvas's selection key
+    # all use it, so renaming one breaks every link to it.
+    title: Ingest pipeline
+    summary: Accept, validate and persist a batch. The floor everything else stands on.
+
+    # Globs scoping every part of this node, unless a part narrows further. `**` crosses
+    # directories, `*` does not, and a pattern with no wildcard also covers everything beneath
+    # it — so `src/api` matches the directory's contents, not just a file with no extension.
+    paths: ["src/ingest/**"]
+
+    parts:
+      - id: validate
+        title: Reject a malformed batch at the door
+        xp: 20 # optional; defaults to 10
+        evidence:
+          # A commit counts when it touches a matching path. With a selector and no count, the
+          # threshold is one commit.
+          paths: ["src/ingest/validate.rs"]
+
+      - id: persist
+        title: Durable storage behind the seam
+        xp: 25
+        evidence:
+          paths: ["src/ingest/store.rs", "migrations/**"]
+          commits: 3 # three commits under those paths
+
+      - id: docs
+        title: The ingest contract, written down
+        evidence:
+          # Selectors are ANDed: a commit in this area that ALSO says this. That is how you
+          # scope "the docs for ingest" without matching every docs commit in the repo.
+          paths: ["docs/**"]
+          subject: "ingest"
+
+  - id: api
+    title: Public API
+    # Milestones that must be `done` before this one leaves `locked`. This makes the node set a
+    # DAG, not a literal tree: a milestone routinely needs two predecessors, and forcing one
+    # parent would make the author pick a lie.
+    requires: [ingest]
+    paths: ["src/api/**"]
+    parts:
+      - id: routes
+        title: Routes and their contract
+        xp: 30
+        evidence:
+          paths: ["src/api/**", "openapi.yaml"]
+          # Distinct PRs among the matching commits, not commits. `commits: 0` turns the commit
+          # threshold off so this closes purely on PR count.
+          prs: 2
+          commits: 0
+
+      - id: authz
+        title: Authorisation on every route
+        xp: 25
+        evidence:
+          paths: ["src/api/authz.rs"]
+          # Optional author filter (substring, case-insensitive). Empty means anyone.
+          # authors: ["alice", "bob"]
+          commits: 2
+
+      - id: review
+        title: Security review held
+        xp: 15
+        evidence:
+          # The escape hatch for work no commit can prove — a review held, a vendor signed.
+          # Honest precisely because it is explicit and lives in the diff.
+          manual: true
+
+  # A node with NO parts is a marker: it closes as soon as everything it requires does. This is
+  # how a spec says "and then we shipped" without inventing a fake task to tick.
+  - id: ga
+    title: GA
+    summary: Everything above, in production.
+    requires: [api]

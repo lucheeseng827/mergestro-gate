@@ -22,14 +22,25 @@
 //! 4. **Mutate** the changed surface only via `cargo-mutants --in-diff`
 //!    ([`mutants`]), with a per-function mutant cap to bound runtime.
 //! 5. **Zero-assertion pre-check** ([`zero_assertion`]): a static second signal.
-//! 6. **Verdict** ([`verdict`]): hard gates block (survivors over budget, a
-//!    severity tier, or debt over budget), soft signals score.
-//! 7. **Report** ([`report`]) as text, JSON, or a Markdown PR comment
+//! 6. **MCP lane** ([`mcp_gate`]), when the repo declares a first-party MCP
+//!    server the diff touches: build it, probe it over stdio with `specprobe`,
+//!    and block on a regression that would deny the server admission. This is
+//!    the one lane that runs the artifact rather than reading the diff.
+//! 7. **Verdict** ([`verdict`]): hard gates block (survivors over budget, a
+//!    severity tier, debt over budget, or an MCP regression), soft signals
+//!    score.
+//! 8. **Report** ([`report`]) as text, JSON, or a Markdown PR comment
 //!    ([`github`]), survivors ordered by [`severity`]; emit a run record for
 //!    validation ([`metrics`]).
 //!
 //! Command execution goes through the [`runner::CommandRunner`] trait so the
 //! orchestration logic stays testable.
+//!
+//! Alongside the gate, [`progression`] answers the question a single gate run
+//! cannot: where the repository stands against the plan it wrote down. It
+//! resolves an authored milestone tree against the repo's own commits and PRs
+//! and renders it — as the SVG a README carries, and as the snapshot the
+//! Mergestro console draws on its canvas.
 
 pub mod analyze;
 pub mod config;
@@ -43,16 +54,19 @@ pub mod github;
 pub mod golang;
 pub mod js;
 pub mod jvm;
+pub mod mcp_gate;
 pub mod metrics;
 pub mod mutants;
 pub mod pattern;
 pub mod pipeline;
 pub mod preflight;
+pub mod progression;
 pub mod python;
 pub mod report;
 pub mod runner;
 pub mod security;
 pub mod severity;
 pub mod slop;
+pub mod turnover_lane;
 pub mod verdict;
 pub mod zero_assertion;
