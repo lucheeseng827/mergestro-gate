@@ -1,0 +1,22 @@
+# Explicit fields, no `workspace = true` inheritance: these crates are vendored verbatim into
+# the Mergestro gate's OSS mirror as path dependencies, and cargo resolves inheritance against
+# whichever workspace root it finds ABOVE the vendored copy — not this module's. Explicit
+# fields build the same everywhere. Versions are pinned once in the root Cargo.toml comment.
+[package]
+name = "turnover-history"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/lucheeseng827/mergestro-gate"
+rust-version = "1.82"
+
+[dependencies]
+turnover-core = { path = "../core", version = "0.1.0" }
+turnover-lang = { path = "../lang", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+gix = { version = "0.87", default-features = false, features = ["max-performance-safe", "blob-diff", "revision", "parallel", "sha1"] }
+rayon = "1.10"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

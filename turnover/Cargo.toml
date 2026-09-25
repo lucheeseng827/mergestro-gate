@@ -1,0 +1,70 @@
+# turnover — longitudinal AI-code maintainability gate.
+#
+# A STANDALONE workspace with its own Cargo.lock: gix 0.87 and tree-sitter (six C-built
+# grammars) are pinned here, and pinning them in a shared resolution would perturb every
+# other crate that shares it.
+#
+#   cargo build --release
+#   cargo test
+#
+# --- Why the crates split this way -------------------------------------------------
+# The product is one arrow — "history -> per-commit buckets -> window vs baseline -> exit
+# code" — so the crate boundaries follow the data, not the features:
+#
+#   core     The signal model: line significance, the per-commit classifier (moved / pasted /
+#            duplicated block), churn attribution, windows, the baseline format, the policy.
+#            PURE — no git, no I/O, no clock, no C build. A classification bug is the ONLY
+#            way the gate can fail a build for the wrong reason, so this surface stays
+#            auditable line-by-line and testable with nothing but strings.
+#   lang     The tree-sitter significance oracle (Rust, Python, JavaScript, Go) and the only
+#            C build. Exports a per-line mask, never an AST, so the model cannot become
+#            grammar-dependent by accident.
+#   history  The git side: gix commit listing, tree diffs with rename/copy detection, blob
+#            reads, and the rayon walk that classifies every commit in parallel.
+#   gate     The gate as a LIBRARY: TOML policy, the baseline on disk (build / refresh),
+#            window selection (trailing or PR scope), evaluation, the text/markdown/JSON
+#            reports and the Mergestro record. Both front-ends call this and nothing else:
+#            the `turnover` binary here, and the turnover lane inside the Mergestro gate
+#            (mergestro-gate), so a build fails for the same reason on both paths.
+#   cli      The `turnover` binary. Argument parsing over `gate`; nothing decided here.
+#
+# DAG: cli -> gate -> history -> lang -> core (gate and cli also use core directly). `cargo test -p
+# turnover-core` is a complete test of the correctness-critical surface with no git, no
+# parser runtime and no C compiler in the build.
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/lang", "crates/history", "crates/gate", "crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/lucheeseng827/mergestro-gate"
+rust-version = "1.82"
+
+# NOT inherited by the crates (see each crate's manifest header): this table is the single
+# place versions are written down, kept in sync with the crates by `cargo test` in CI and by
+# the mirror build. Change a version here AND in the crates that use it.
+[workspace.dependencies]
+turnover-core = { path = "crates/core", version = "0.1.0" }
+turnover-lang = { path = "crates/lang", version = "0.1.0" }
+turnover-history = { path = "crates/history", version = "0.1.0" }
+turnover-gate = { path = "crates/gate", version = "0.1.0" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+rayon = "1.10"
+similar = "2"
+gix = { version = "0.87", default-features = false, features = ["max-performance-safe", "blob-diff", "revision", "parallel", "sha1"] }
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-java = "0.23"
+tempfile = "3"
+ureq = { version = "2.12", features = ["tls"] }
