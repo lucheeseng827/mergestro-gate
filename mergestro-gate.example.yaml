@@ -19,9 +19,15 @@ timeout_secs: 60
 # Core runtime lever: cap mutants tested per function.
 max_mutants_per_function: 5
 
+# Optional wall-clock limit (seconds) on the Rust mutation run. Mutants still
+# running at the limit are reported as not tested. Omit for no limit.
+# budget_secs: 600
+# block_on_budget: false   # true = untested mutants block instead of warning
+
 # Determinism pre-flight: run the suite this many times; all must be green and
-# stable before mutation results are trusted.
-preflight_runs: 2
+# stable before mutation results are trusted. 1 proves it green; 2+ also catches
+# a flaky suite, at one full suite run each.
+preflight_runs: 1
 
 # Skip the pre-flight when CI has already proven the suite green this run.
 skip_preflight: false

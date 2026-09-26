@@ -32,6 +32,10 @@ pub struct EngineRun {
     pub candidates: usize,
     /// Mutants dropped by the per-function cap.
     pub capped_out: usize,
+    /// Rust only: [`mutants::selection_fingerprint`] of the capped selection.
+    pub selection: Option<String>,
+    /// Rust only: survivor name → stable occurrence ([`mutants::occurrences`]).
+    pub occurrences: std::collections::BTreeMap<String, u32>,
 }
 
 /// A per-language mutation engine. The pipeline calls these in registration
@@ -135,6 +139,17 @@ impl MutationEngine for RustEngine {
         let candidates = mutants::list_candidates(runner, &cfg.repo, &scope.diff_path, &packages)?;
         let enumerated = candidates.len();
         let selection = mutants::apply_cap(candidates, cfg.max_mutants_per_function);
+        // Counted before sharding: another shard's mutants are not "capped out".
+        let capped_out = selection.excluded.len();
+        // Identity and fingerprint come from the whole selection, not this shard's
+        // part: every shard must agree on them.
+        let all_kept = selection.kept.clone();
+        let fingerprint = Some(mutants::selection_fingerprint(&all_kept));
+        let ids = mutants::occurrences(&all_kept);
+        let selection = match cfg.shard_index() {
+            Some((k, n)) => mutants::take_shard(selection, k, n),
+            None => selection,
+        };
         let kept = selection.kept.len();
         // No mutable mutants on the changed surface (e.g. the diff only touched
         // comments, `use` lines, formatting, or test-only code). `cargo mutants`
@@ -145,10 +160,22 @@ impl MutationEngine for RustEngine {
             return Ok(EngineRun {
                 results: MutationResults::default(),
                 candidates: enumerated,
-                capped_out: selection.excluded.len(),
+                capped_out,
+                selection: fingerprint,
+                occurrences: Default::default(),
             });
         }
         let output_dir = mutants::output_dir_for(work_dir);
+        // In place, cargo-mutants edits the checkout and restores each file after
+        // its test — unless it is killed mid-mutant (a budget stop that SIGTERM
+        // did not end in time), which leaves the mutation behind. `--in-diff`
+        // only mutates changed files, so keep those and put them back whatever
+        // happened: a caller's working tree must not come out of the gate edited.
+        let snapshot = if cfg.in_place {
+            mutants::snapshot(&cfg.repo, &scope.changed_rust_files)?
+        } else {
+            Vec::new()
+        };
         let results = mutants::run_mutation(
             runner,
             cfg,
@@ -157,11 +184,21 @@ impl MutationEngine for RustEngine {
             &selection.excluded,
             &packages,
             kept,
-        )?;
+        );
+        mutants::restore(&snapshot)?;
+        let mut results = results?;
+        mutants::enrich(&mut results.survivors, &all_kept);
+        let occurrences = results
+            .survivors
+            .iter()
+            .filter_map(|s| ids.get(&s.name).map(|n| (s.name.clone(), *n)))
+            .collect();
         Ok(EngineRun {
             results,
             candidates: enumerated,
-            capped_out: selection.excluded.len(),
+            capped_out,
+            selection: fingerprint,
+            occurrences,
         })
     }
 }
@@ -232,6 +269,7 @@ impl MutationEngine for PythonEngine {
             results,
             candidates,
             capped_out: 0,
+            ..Default::default()
         })
     }
 }
@@ -295,6 +333,7 @@ impl MutationEngine for JsEngine {
             results,
             candidates,
             capped_out: 0,
+            ..Default::default()
         })
     }
 }
@@ -358,6 +397,7 @@ impl MutationEngine for GoEngine {
             results,
             candidates,
             capped_out: 0,
+            ..Default::default()
         })
     }
 }
@@ -421,6 +461,7 @@ impl MutationEngine for JvmEngine {
             results,
             candidates,
             capped_out: 0,
+            ..Default::default()
         })
     }
 }
@@ -449,6 +490,9 @@ mod tests {
             changed_js_files: vec![],
             changed_go_files: vec![],
             changed_jvm_files: vec![],
+            rust_versions: vec![],
+            base_commit: String::new(),
+            head_commit: String::new(),
         }
     }
 
@@ -468,6 +512,9 @@ mod tests {
                 .collect(),
             changed_go_files: vec![],
             changed_jvm_files: vec![],
+            rust_versions: vec![],
+            base_commit: String::new(),
+            head_commit: String::new(),
         }
     }
 
@@ -487,6 +534,9 @@ mod tests {
                 })
                 .collect(),
             changed_jvm_files: vec![],
+            rust_versions: vec![],
+            base_commit: String::new(),
+            head_commit: String::new(),
         }
     }
 
@@ -678,6 +728,9 @@ mod tests {
             changed_js_files: vec![],
             changed_go_files: vec![],
             changed_jvm_files: vec![],
+            rust_versions: vec![],
+            base_commit: String::new(),
+            head_commit: String::new(),
         };
 
         let runner = ScriptedRunner::new();

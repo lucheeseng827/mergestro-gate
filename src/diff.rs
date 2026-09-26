@@ -55,6 +55,24 @@ pub struct DiffScope {
     pub changed_go_files: Vec<FileChange>,
     /// Changed Java/Kotlin files with their touched line numbers (PIT adapter).
     pub changed_jvm_files: Vec<FileChange>,
+    /// Both sides of every changed `*.rs` file that mentions tests, deletions
+    /// and additions included (an empty `base` is an added file, a `None` head
+    /// a deleted one). The weakened-test lane compares them: a PR that only
+    /// deletes tests or removes assertions touches no mutable line, so without
+    /// this nothing else in the gate would notice.
+    pub rust_versions: Vec<RustVersions>,
+    /// The commits the refs resolved to. Ref names are not an identity: two
+    /// shards that both ran `HEAD` may have run different commits.
+    pub base_commit: String,
+    pub head_commit: String,
+}
+
+/// One changed Rust file's content at base and head, for the weakened-test lane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustVersions {
+    pub path: String,
+    pub base: String,
+    pub head: Option<String>,
 }
 
 /// Compute the `base -> head` diff and the changed Rust files, writing the
@@ -68,8 +86,8 @@ pub fn compute_scope(
     let repo = gix::open(repo_path)
         .with_context(|| format!("opening git repository at {}", repo_path.display()))?;
 
-    let base_tree = peel_to_tree(&repo, base_ref)?;
-    let head_tree = peel_to_tree(&repo, head_ref)?;
+    let (base_commit, base_tree) = peel_to_tree(&repo, base_ref)?;
+    let (head_commit, head_tree) = peel_to_tree(&repo, head_ref)?;
 
     let mut unified = String::new();
     let mut collected = Collected::default();
@@ -113,6 +131,9 @@ pub fn compute_scope(
         changed_js_files: collected.js,
         changed_go_files: collected.go,
         changed_jvm_files: collected.jvm,
+        rust_versions: collected.rust_versions,
+        base_commit,
+        head_commit,
     })
 }
 
@@ -127,6 +148,7 @@ struct Collected {
     js: Vec<FileChange>,
     go: Vec<FileChange>,
     jvm: Vec<FileChange>,
+    rust_versions: Vec<RustVersions>,
 }
 
 impl Collected {
@@ -142,8 +164,11 @@ impl Collected {
     }
 }
 
-/// Resolve a revspec to its tree, peeling through tags/commits as needed.
-fn peel_to_tree<'repo>(repo: &'repo gix::Repository, revspec: &str) -> Result<gix::Tree<'repo>> {
+/// Resolve a revspec to its commit id and tree, peeling through tags as needed.
+fn peel_to_tree<'repo>(
+    repo: &'repo gix::Repository,
+    revspec: &str,
+) -> Result<(String, gix::Tree<'repo>)> {
     let commit = repo
         .rev_parse_single(revspec)
         .with_context(|| format!("resolving ref `{revspec}` (is it fetched?)"))?
@@ -152,9 +177,10 @@ fn peel_to_tree<'repo>(repo: &'repo gix::Repository, revspec: &str) -> Result<gi
         .peel_to_kind(gix::object::Kind::Commit)
         .with_context(|| format!("`{revspec}` does not point at a commit"))?
         .into_commit();
-    commit
+    let tree = commit
         .tree()
-        .with_context(|| format!("reading tree of `{revspec}`"))
+        .with_context(|| format!("reading tree of `{revspec}`"))?;
+    Ok((commit.id.to_string(), tree))
 }
 
 /// Inspect a single changed file (added/modified/rewritten). Rust files are
@@ -195,14 +221,22 @@ fn render_change(
         }
         // Nothing on the head side to mutate — but a deletion is still a change,
         // and "delete half the server" must not read as "the diff missed it".
-        Change::Deletion { location, .. } => {
-            out.all.push(location.to_str_lossy().into_owned());
+        Change::Deletion { location, id, .. } => {
+            let path = location.to_str_lossy().into_owned();
+            // A deleted test file is the plainest way to weaken a suite.
+            if path.ends_with(".rs") {
+                record_rust_versions(out, &path, &blob_data(id)?, None);
+            }
+            out.all.push(path);
             return Ok(());
         }
     };
 
     let path = location.to_str_lossy().into_owned();
     out.all.push(path.clone());
+    if path.ends_with(".rs") {
+        record_rust_versions(out, &path, &old, Some(&new));
+    }
 
     if path.ends_with(".rs") {
         if let Some(body) = unified_body(&old, &new)? {
@@ -333,6 +367,22 @@ fn unified_body(old: &[u8], new: &[u8]) -> Result<Option<String>> {
         Ok(None)
     } else {
         Ok(Some(body))
+    }
+}
+
+/// Keep both sides of a changed Rust file for the weakened-test lane — only
+/// when either side mentions tests, so a large refactor does not hold every
+/// file's text twice for a lane with nothing to compare.
+fn record_rust_versions(out: &mut Collected, path: &str, old: &[u8], new: Option<&[u8]>) {
+    let base = String::from_utf8_lossy(old).into_owned();
+    let head = new.map(|n| String::from_utf8_lossy(n).into_owned());
+    let mentions_tests = |s: &str| s.contains("#[test]") || s.contains("::test]");
+    if mentions_tests(&base) || head.as_deref().is_some_and(mentions_tests) {
+        out.rust_versions.push(RustVersions {
+            path: path.to_string(),
+            base,
+            head,
+        });
     }
 }
 

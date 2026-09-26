@@ -6,6 +6,12 @@
 //! have caught the mutant was itself failing) and phantom catches. So before
 //! mutating anything we run the suite N times and require every run to pass.
 //! Any failure, or any flip between runs, suppresses the mutation phase.
+//!
+//! N defaults to 1: that proves the suite green, which is what the mutation
+//! needs, and it is the only suite run before the first mutant — a green
+//! pre-flight is also why cargo-mutants' own baseline is always skipped
+//! (`mutants::mutation_args`). A flip needs two runs to show, so `N >= 2` is
+//! how a team with a flaky suite keeps that protection, at one suite run each.
 
 use anyhow::{Context, Result};
 

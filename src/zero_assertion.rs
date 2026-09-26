@@ -43,8 +43,33 @@ pub fn scan_files(repo: &Path, files: &[String]) -> Vec<ZeroAssertionFinding> {
 /// Scan a single source string for `#[test]` functions whose bodies contain no
 /// assertion-like check.
 pub fn scan_source(path: &str, content: &str) -> Vec<ZeroAssertionFinding> {
+    tests_in(content)
+        .into_iter()
+        .filter(|t| !has_check(&t.body, t.should_panic))
+        .map(|t| ZeroAssertionFinding {
+            file: path.to_string(),
+            line: t.line,
+            function: t.name,
+        })
+        .collect()
+}
+
+/// One `#[test]` function as the line scanner sees it.
+pub(crate) struct TestFn {
+    pub name: String,
+    /// 1-based line of the `fn`.
+    pub line: u32,
+    /// Text between the body's outermost braces.
+    pub body: String,
+    pub should_panic: bool,
+}
+
+/// Every `#[test]` function in `content` (also `#[tokio::test]` and the like),
+/// in source order. Shared with the weakened-test lane, which compares them
+/// between a file's base and head.
+pub(crate) fn tests_in(content: &str) -> Vec<TestFn> {
     let lines: Vec<&str> = content.lines().collect();
-    let mut findings = Vec::new();
+    let mut tests = Vec::new();
     let mut is_test = false;
     let mut should_panic = false;
 
@@ -67,14 +92,12 @@ pub fn scan_source(path: &str, content: &str) -> Vec<ZeroAssertionFinding> {
 
         if is_test {
             if let Some(name) = function_name(line) {
-                let body = body_after(&lines, idx);
-                if !has_check(&body, should_panic) {
-                    findings.push(ZeroAssertionFinding {
-                        file: path.to_string(),
-                        line: (idx + 1) as u32,
-                        function: name,
-                    });
-                }
+                tests.push(TestFn {
+                    name,
+                    line: (idx + 1) as u32,
+                    body: body_after(&lines, idx),
+                    should_panic,
+                });
                 is_test = false;
                 should_panic = false;
                 continue;
@@ -87,7 +110,7 @@ pub fn scan_source(path: &str, content: &str) -> Vec<ZeroAssertionFinding> {
         should_panic = false;
     }
 
-    findings
+    tests
 }
 
 /// If `line` is an attribute, return its path (the bit before any `(`/`]`),

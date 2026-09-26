@@ -34,9 +34,49 @@ inputs:
     default: ""
   test-changed-package-only:
     description: >-
-      In a workspace, narrow mutation tests to the changed crate (faster, but a
-      mutant caught only by a downstream crate's tests shows as a survivor).
-      Default runs the whole workspace's tests against each mutant.
+      Kept for compatibility. Since 0.6.0 each mutant runs only the changed
+      crate's tests by default, so this input no longer changes anything; use
+      `test-workspace` to widen.
+    required: false
+    default: "false"
+  test-workspace:
+    description: >-
+      Run the whole workspace's tests against each mutant, not only the changed
+      crate's. Slower; use it when a crate is tested mainly from another crate.
+    required: false
+    default: "false"
+  budget:
+    description: >-
+      Wall-clock limit on the Rust mutation run, e.g. `10m`, `600`, `90s`.
+      Mutants still running when it is reached are reported as not tested
+      (never as caught or surviving). Empty = no limit.
+    required: false
+    default: ""
+  block-on-budget:
+    description: >-
+      Block when the budget left mutants untested. By default that is a
+      warning in the report.
+    required: false
+    default: "false"
+  sarif:
+    description: >-
+      Also write the findings (survivors, zero-assertion tests, pattern lanes)
+      as SARIF 2.1.0 to this path, e.g. `mergestro.sarif`. Empty = off.
+    required: false
+    default: ""
+  upload-sarif:
+    description: >-
+      Upload the `sarif` file to GitHub code scanning, so findings show on the
+      lines they are about. Needs `security-events: write` on the job. Runs
+      even when the gate blocks.
+    required: false
+    default: "false"
+  in-place:
+    description: >-
+      Mutate the checkout instead of a scratch copy, so mutants reuse the
+      pre-flight's build (and a cached target/, e.g. Swatinem/rust-cache)
+      instead of paying a second cold build. Mutants then run one at a time
+      (`jobs` is ignored). Safe on a CI checkout.
     required: false
     default: "false"
   max-survivors:
@@ -66,14 +106,21 @@ inputs:
   block-on-pattern:
     description: >-
       Block when a pattern lane flags something. Comma-separated; each value is
-      a lane (slop|security|convention|all) or a rule id (e.g. hardcoded-secret,
-      unknown-crate-import). Advisory if empty.
+      a lane (slop|security|convention|docs|weakened-tests|all) or a rule id
+      (e.g. hardcoded-secret, test-removed). Advisory if empty.
     required: false
     default: ""
   comment:
     description: "Post / update the report as a PR comment."
     required: false
     default: "true"
+  comment-inline:
+    description: >-
+      Also post each surviving mutant as a review comment on its line (GitHub
+      only; needs `comment`). Each is commented once; a failed review is
+      retried on the next run.
+    required: false
+    default: "false"
   metrics-file:
     description: "Append a JSON-Lines validation record to this file (Phase 3)."
     required: false
@@ -133,7 +180,7 @@ inputs:
   version:
     description: "Release tag of the prebuilt slop-gate binary to install."
     required: false
-    default: "v0.5.0"
+    default: "v0.6.0"
   token:
     description: "GitHub token used to post the PR comment."
     required: false
@@ -323,7 +370,10 @@ runs:
         [ "${{ inputs.block-on-severity }}" != "" ] && args+=( --block-on-severity "${{ inputs.block-on-severity }}" )
         [ "${{ inputs.debt-budget }}" != "" ] && args+=( --debt-budget "${{ inputs.debt-budget }}" )
         [ "${{ inputs.block-on-debt }}" = "true" ] && args+=( --block-on-debt )
-        [ "${{ inputs.test-changed-package-only }}" = "true" ] && args+=( --test-changed-package-only )
+        [ "${{ inputs.budget }}" != "" ] && args+=( --budget "${{ inputs.budget }}" )
+        [ "${{ inputs.block-on-budget }}" = "true" ] && args+=( --block-on-budget )
+        [ "${{ inputs.in-place }}" = "true" ] && args+=( --in-place )
+        [ "${{ inputs.test-workspace }}" = "true" ] && args+=( --test-workspace )
         [ "${{ inputs.test-tool }}" != "" ] && args+=( --test-tool "${{ inputs.test-tool }}" )
         [ "${{ inputs.block-on-pattern }}" != "" ] && args+=( --block-on-pattern "${{ inputs.block-on-pattern }}" )
         [ "${{ inputs.turnover }}" != "true" ] && args+=( --no-turnover )
@@ -331,6 +381,25 @@ runs:
         [ "${{ inputs.block-on-turnover-drift }}" = "true" ] && args+=( --block-on-turnover-drift )
         [ "${{ inputs.turnover-baseline-url }}" != "" ] && args+=( --turnover-baseline-url "${{ inputs.turnover-baseline-url }}" )
         [ "${{ inputs.comment }}" = "true" ] && args+=( --comment )
+        [ "${{ inputs.comment }}" = "true" ] && [ "${{ inputs.comment-inline }}" = "true" ] && args+=( --comment-inline )
         [ "${{ inputs.metrics-file }}" != "" ] && args+=( --metrics-file "${{ inputs.metrics-file }}" )
         [ "${{ inputs.metrics-url }}" != "" ] && args+=( --metrics-url "${{ inputs.metrics-url }}" )
+        # A SARIF file left from an earlier run (a self-hosted runner's workspace,
+        # a committed file) must not be uploaded as this run's findings: remove it,
+        # so after this step the file exists only if this run wrote it.
+        if [ "${{ inputs.sarif }}" != "" ]; then
+          rm -f -- "${{ inputs.sarif }}"
+          args+=( --sarif "${{ inputs.sarif }}" )
+        fi
         slop-gate "${args[@]}"
+
+    # always(): a blocked verdict fails the step above, and that is exactly when
+    # the findings matter. hashFiles(): the step above removed any old file, so
+    # one exists only if this run wrote it — an operational failure before the
+    # report leaves none, and nothing stale is uploaded in its place.
+    - name: Upload SARIF to code scanning
+      if: ${{ always() && inputs.upload-sarif == 'true' && inputs.sarif != '' && hashFiles(inputs.sarif) != '' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ inputs.sarif }}
+        category: mergestro-gate

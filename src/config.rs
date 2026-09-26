@@ -26,19 +26,45 @@ pub struct Config {
     pub timeout_secs: u64,
     /// Hard cap on mutants tested per function — the core runtime lever.
     pub max_mutants_per_function: usize,
-    /// How many times the suite is run in the determinism pre-flight.
+    /// Wall-clock limit, in seconds, on the Rust mutation run (cargo-mutants,
+    /// including its first build). When it is reached the run is stopped, every
+    /// mutant that finished counts as usual, and the rest are reported as *not
+    /// tested* — never as caught or surviving. `None` (default) = no limit.
+    pub budget_secs: Option<u64>,
+    /// Block when the budget left mutants untested. Off by default: running out
+    /// of time is reported as a warning, since nothing untested was shown to be
+    /// wrong.
+    pub block_on_budget: bool,
+    /// Mutate the checkout itself (`cargo-mutants --in-place`) instead of a
+    /// scratch copy. The copy starts with no `target/`, so every run pays a cold
+    /// build even when the pre-flight has just built the same tree; in place,
+    /// the mutants reuse that build (and a cached `target/`). cargo-mutants then
+    /// runs one mutant at a time — `jobs` is ignored — and edits files in the
+    /// checkout while it works, restoring each after its test. For CI checkouts,
+    /// not a working tree you are editing.
+    pub in_place: bool,
+    /// Run one shard of the Rust mutants: `"k/n"`, 1-based. Kept mutants are
+    /// dealt round-robin in listing order, so every shard sees the same split;
+    /// the other engines run on shard 1 only. Combine the shards' `--format
+    /// json` reports with `slop-gate merge-reports`. `None` = the whole run.
+    pub shard: Option<String>,
+    /// How many times the suite is run in the determinism pre-flight. Default 1:
+    /// it proves the suite green, which is what the mutation needs. Raise it to 2+
+    /// to also catch a flaky suite (a pass/fail flip between runs) — each extra run
+    /// costs one full suite before the first mutant.
     pub preflight_runs: u32,
     /// Skip the pre-flight entirely (e.g. CI already proved the suite green).
     pub skip_preflight: bool,
     /// Test command + args used by the pre-flight (program first).
     pub test_command: Vec<String>,
     /// In a workspace, mutation is scoped to the changed crate(s) via
-    /// `--package`. By default the *tests* still run across the whole workspace
-    /// (`--test-workspace`), so a mutant caught only by a downstream crate's
-    /// tests is still caught — no false survivors. Set `true` to narrow tests to
-    /// the changed package only: faster, but a downstream-only catch then shows
-    /// as a survivor. Off by default (correctness over speed).
-    #[serde(default)]
+    /// `--package`, and by default so are the *tests* each mutant runs: only the
+    /// changed crate's own. That is the fast path. Set `false` (CLI
+    /// `--test-workspace`) to run the whole workspace's tests against each mutant,
+    /// so a mutant caught only by a downstream crate's tests is still caught —
+    /// with the default, that catch shows as a survivor. On by default since
+    /// 0.6.0 (it was off in 0.5.x). No field-level `serde(default)`: an omitted
+    /// key must take `Config::default()`'s `true`, not `bool::default()`.
     pub test_changed_package_only: bool,
     /// Test runner cargo-mutants drives: `"cargo"` (default) or `"nextest"`.
     /// `nextest` runs each test in its own process, highly parallel — often a
@@ -181,7 +207,14 @@ fn default_mcp_timeout_secs() -> u64 {
 }
 
 /// The recognised pattern-lane names for `block_on_pattern` (besides rule ids).
-pub const PATTERN_LANES: [&str; 5] = ["slop", "security", "convention", "docs", "all"];
+pub const PATTERN_LANES: [&str; 6] = [
+    "slop",
+    "security",
+    "convention",
+    "docs",
+    "weakened-tests",
+    "all",
+];
 
 impl Default for Config {
     fn default() -> Self {
@@ -192,14 +225,18 @@ impl Default for Config {
             jobs: default_jobs(),
             timeout_secs: 60,
             max_mutants_per_function: 5,
-            preflight_runs: 2,
+            budget_secs: None,
+            block_on_budget: false,
+            in_place: false,
+            shard: None,
+            preflight_runs: 1,
             skip_preflight: false,
             test_command: vec![
                 "cargo".to_string(),
                 "test".to_string(),
                 "--quiet".to_string(),
             ],
-            test_changed_package_only: false,
+            test_changed_package_only: true,
             test_tool: default_test_tool(),
             block_on_survivors: true,
             max_survivors: 0,
@@ -249,10 +286,27 @@ impl Config {
         Ok(cfg)
     }
 
+    /// `shard` as `(k, n)`, 1-based; `None` when unset or malformed.
+    pub fn shard_index(&self) -> Option<(usize, usize)> {
+        let (k, n) = self.shard.as_deref()?.split_once('/')?;
+        let (k, n): (usize, usize) = (k.trim().parse().ok()?, n.trim().parse().ok()?);
+        (1..=n).contains(&k).then_some((k, n))
+    }
+
     /// Reject nonsensical values early, before any subprocess runs.
     pub fn validate(&self) -> Result<()> {
         anyhow::ensure!(self.jobs >= 1, "jobs must be >= 1");
         anyhow::ensure!(self.timeout_secs >= 1, "timeout_secs must be >= 1");
+        anyhow::ensure!(
+            self.budget_secs != Some(0),
+            "budget_secs must be >= 1 (omit it for no budget)"
+        );
+        if let Some(s) = &self.shard {
+            anyhow::ensure!(
+                self.shard_index().is_some(),
+                "shard `{s}` must be `k/n` with 1 <= k <= n, e.g. `2/4`"
+            );
+        }
         anyhow::ensure!(
             self.max_mutants_per_function >= 1,
             "max_mutants_per_function must be >= 1"
@@ -393,6 +447,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_shard_is_k_of_n_with_k_in_range() {
+        let with = |s: &str| Config {
+            shard: Some(s.into()),
+            ..Config::default()
+        };
+        assert_eq!(with("2/4").shard_index(), Some((2, 4)));
+        assert!(with("1/1").validate().is_ok());
+        for bad in ["0/4", "5/4", "2", "a/b", "2/0", "/4"] {
+            assert!(with(bad).validate().is_err(), "should refuse `{bad}`");
+        }
+    }
+
+    #[test]
     fn defaults_are_valid() {
         Config::default()
             .validate()
@@ -409,6 +476,19 @@ mod tests {
         // Untouched field keeps its default.
         assert_eq!(cfg.head_ref, "HEAD");
         assert_eq!(cfg.test_command.first().unwrap(), "cargo");
+    }
+
+    #[test]
+    fn fast_path_defaults_survive_yaml() {
+        // 0.6.0 defaults: one pre-flight run, tests scoped to the changed crate.
+        // A YAML file that does not mention them must keep them — a field-level
+        // `serde(default)` would silently turn the scope back to `false`.
+        let cfg: Config = serde_yaml::from_str("base_ref: develop\n").unwrap();
+        assert_eq!(cfg.preflight_runs, 1);
+        assert!(cfg.test_changed_package_only);
+        // And the file can still widen the tests to the whole workspace.
+        let cfg: Config = serde_yaml::from_str("test_changed_package_only: false\n").unwrap();
+        assert!(!cfg.test_changed_package_only);
     }
 
     #[test]

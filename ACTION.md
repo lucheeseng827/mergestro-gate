@@ -45,7 +45,7 @@ does a blocked verdict actually stop the merge.
 | ---- | ----------------- |
 | `checkout` with `fetch-depth: 0` | The gate diffs against the **merge-base** of your PR; a shallow clone has no merge-base to resolve. |
 | `dtolnay/rust-toolchain` | `cargo-mutants` compiles + re-tests each mutant — it needs a toolchain. |
-| `Swatinem/rust-cache` | Caches `target/` so the baseline build isn't re-paid every run. Skipping it works but is much slower. |
+| `Swatinem/rust-cache` | Caches `target/`. On its own that speeds up the pre-flight only; with the Action's `in-place: true` the mutants reuse it too, and the cold build is not re-paid every run. |
 
 The Action itself then installs `cargo-mutants` and the `slop-gate` binary
 (prebuilt musl, source-built only as a fallback), resolves the merge-base, and
@@ -63,15 +63,48 @@ runs the gate.
 | `block-on-zero-assertion` | `false` | Also block when assertion-free tests are found. |
 | `debt-budget` | _(unset)_ | Per-PR structural-debt budget (net complexity + duplication + coupling). |
 | `block-on-debt` | `false` | Also block when the debt-delta exceeds the budget. |
-| `block-on-pattern` | _(unset)_ | Gate a pattern lane — a lane (`slop`/`security`/`convention`/`all`) or rule id (e.g. `hardcoded-secret`, `unknown-crate-import`). Comma-separated; advisory if unset. |
+| `block-on-pattern` | _(unset)_ | Gate a pattern lane — a lane (`slop`/`security`/`convention`/`docs`/`weakened-tests`/`all`) or rule id (e.g. `hardcoded-secret`, `unknown-crate-import`). Comma-separated; advisory if unset. |
 | `jobs` | `4` | Parallel mutant jobs. Raise on bigger runners. |
 | `timeout` | `60` | Per-mutant test timeout (seconds). |
+| `test-workspace` | `false` | Run the whole workspace's tests per mutant, not only the changed crate's (use when a crate is tested from another). |
+| `budget` | _(unset)_ | Wall-clock limit on the mutation run (`10m`, `600`, `90s`). Unfinished mutants are reported as not tested. |
+| `block-on-budget` | `false` | Block when the budget left mutants untested (a warning otherwise). |
+| `in-place` | `false` | Mutate the checkout so mutants reuse the pre-flight's build and a cached `target/` (one mutant at a time). |
+| `sarif` | _(unset)_ | Also write the findings as SARIF 2.1.0 to this path. |
+| `upload-sarif` | `false` | Upload that file to GitHub code scanning (needs `security-events: write`). Runs even when the gate blocks. |
 | `config` | _(unset)_ | Path to a `slop-gate.yaml` config file (CLI inputs override it). |
 | `metrics-file` | _(unset)_ | Append a JSON-Lines validation record (Phase 3 telemetry). |
-| `comment` | `true` | Post / update the idempotent PR comment. |
-| `version` | `v0.5.0` | Release tag of the prebuilt binary to install. |
+| `comment` | `true` | Post / update the idempotent PR comment. It also reports what is new, still open and resolved since the last run. |
+| `comment-inline` | `false` | Also post each surviving mutant as a review comment on its line, once each, retried if a review fails (GitHub only; needs `comment`). |
+| `version` | `v0.6.0` | Release tag of the prebuilt binary to install. |
 | `token` | `GITHUB_TOKEN` | Token used to post the PR comment. |
 | `release-token` | _(unset)_ | Read-scoped PAT/App token to fetch the binary when the **action repo is private** — see [Private](#private-action-repo). |
+
+## Findings in code scanning (SARIF)
+
+Survivors, zero-assertion tests and the pattern lanes' findings can go to GitHub
+code scanning as well as the PR comment, so they show on the line they are about
+in the "Files changed" tab and in the Security tab, with code scanning's own
+dismiss / reopen workflow:
+
+```yaml
+    permissions: { contents: read, pull-requests: write, security-events: write }
+    # …
+      - uses: lucheeseng827/mergestro-gate@v1
+        with:
+          sarif: mergestro.sarif
+          upload-sarif: "true"
+```
+
+Survivor levels follow their severity (critical/high → error, medium → warning,
+low → note). The gate writes no fingerprints of its own: `upload-sarif` computes
+GitHub's per-line hash from the source, which keeps each finding distinct and
+follows it when the code above it moves. Uploading through the REST API instead
+skips that step, so prefer the Action's `upload-sarif`.
+
+The inputs that are new in 0.6.0 (`sarif`, `budget`, `in-place`, `test-workspace`, …)
+need a 0.6.0 binary: set `version` accordingly until the release makes it the
+default.
 
 ## Exit codes / what blocks
 

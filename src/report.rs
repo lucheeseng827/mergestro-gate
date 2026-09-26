@@ -154,6 +154,42 @@ pub struct GateReport {
     pub survivors: Vec<Mutant>,
     pub timed_out: usize,
     pub unviable: usize,
+    /// Rust mutants ran only the changed crate(s)' own tests (the default since
+    /// 0.6.0). A survivor may then be caught by another crate's tests, so the
+    /// report says which scope ran and how to widen it (`--test-workspace`).
+    #[serde(default)]
+    pub rust_tests_changed_crate_only: bool,
+    /// Mutants the budget stopped before they finished (`--budget`). Neither
+    /// caught nor surviving: the report says so, and they block only under
+    /// `--block-on-budget`.
+    #[serde(default)]
+    pub not_tested_budget: usize,
+    /// `"k/n"` when this report is one shard of a run (`--shard`), for
+    /// [`merge`] to check it has the whole set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shard: Option<String>,
+    /// The commits `base_ref` / `head_ref` resolved to: what [`merge`] compares,
+    /// since two shards that both say `HEAD` may have run different commits.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub base_commit: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub head_commit: String,
+    /// Fingerprint of the Rust mutant selection before sharding (cap and
+    /// listing): [`merge`] requires it equal, or shards may have left mutants
+    /// untested between them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub selection: String,
+    /// The settings each mutant was tested under (test runner, per-mutant
+    /// timeout). [`merge`] requires them equal: the same mutants tested under
+    /// different conditions do not add up to one run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub test_settings: String,
+    /// Survivor name → its occurrence among every kept mutant with the same file
+    /// and mutation. Makes [`GateReport::survivor_keys`] stable when an identical
+    /// mutation elsewhere in the file is killed; survivors without an entry
+    /// (the non-Rust engines) fall back to counting survivors.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub survivor_occurrence: std::collections::BTreeMap<String, u32>,
     /// Tests on the changed surface that assert nothing.
     pub zero_assertion_tests: Vec<ZeroAssertionFinding>,
     /// Phase 4: net structural debt the diff adds (None when nothing changed).
@@ -171,6 +207,10 @@ pub struct GateReport {
     /// `None` when nothing was flagged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub convention: Option<PatternReport>,
+    /// Weakened-test lane: tests the change deleted, or left checking less
+    /// (advisory). `None` when nothing was flagged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weakened_tests: Option<PatternReport>,
     /// Pattern lane: documentation-standard compliance + doc drift on the
     /// changed modules (advisory). `None` when nothing was flagged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -188,6 +228,158 @@ pub struct GateReport {
     /// The gate decision.
     pub verdict: Verdict,
     pub duration_secs: f64,
+    /// Survivor identities from the previous run's PR comment (see
+    /// [`GateReport::survivor_keys`]); `None` on a first run or with no comment
+    /// to read. Set by the caller before rendering, never serialised.
+    #[serde(skip)]
+    pub previous_survivors: Option<Vec<String>>,
+    /// Survivors that already have an inline review comment, per the previous
+    /// comment. Kept apart from `previous_survivors`: a survivor can be known
+    /// without its inline comment ever having posted (a review that failed),
+    /// and that one must be tried again. Never serialised.
+    #[serde(skip)]
+    pub previous_inlined: Option<Vec<String>>,
+    /// Survivors whose inline comment this run posted. Never serialised.
+    #[serde(skip)]
+    pub inlined: Vec<String>,
+}
+
+/// Hidden block in the PR comment that carries survivor identities to the next
+/// run, so it can say what is new, still open and resolved since this one.
+pub const SURVIVOR_STATE_PREFIX: &str = "<!-- slop-gate:survivors ";
+
+/// Hidden block with the survivors whose inline review comment has posted.
+pub const INLINED_STATE_PREFIX: &str = "<!-- slop-gate:inlined ";
+
+/// What changed between the previous run's survivors and this run's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SinceLastRun {
+    /// Keys of survivors this run has and the previous one did not.
+    pub new: Vec<String>,
+    pub still_open: usize,
+    /// Keys the previous run had and this one does not — `None` when this run
+    /// did not re-test everything (suite not green, budget stop), since a
+    /// survivor that was not re-tested has not been shown to be fixed.
+    pub resolved: Option<Vec<String>>,
+}
+
+/// Combine the reports of one sharded run (`--shard k/n`) into the report the
+/// whole run would have produced. Refuses anything that is not exactly one
+/// report per shard of the same run: a missing shard is untested mutants, and
+/// reading that as a clean result is the one thing a merge must not do.
+///
+/// Every shard lists and caps the same mutants and runs the same static lanes,
+/// so those come from shard 1; the mutation outcomes are summed. The verdict is
+/// left for the caller to recompute under its own flags.
+pub fn merge(mut reports: Vec<GateReport>) -> anyhow::Result<GateReport> {
+    let index = |r: &GateReport| -> Option<(usize, usize)> {
+        let (k, n) = r.shard.as_deref()?.split_once('/')?;
+        Some((k.parse().ok()?, n.parse().ok()?))
+    };
+    let mut shards = Vec::with_capacity(reports.len());
+    for r in &reports {
+        shards.push(index(r).ok_or_else(|| {
+            anyhow::anyhow!("a report has no `shard` (was it run with --shard k/n?)")
+        })?);
+    }
+    let n = shards[0].1;
+    let mut ks: Vec<usize> = shards
+        .iter()
+        .map(|&(k, m)| {
+            anyhow::ensure!(m == n, "shards of different runs: `/{n}` and `/{m}`");
+            Ok(k)
+        })
+        .collect::<anyhow::Result<_>>()?;
+    ks.sort_unstable();
+    anyhow::ensure!(
+        ks == (1..=n).collect::<Vec<_>>(),
+        "need exactly one report per shard 1..={n}, got shards {ks:?}"
+    );
+    let (base, head) = (reports[0].base_ref.clone(), reports[0].head_ref.clone());
+    anyhow::ensure!(
+        reports
+            .iter()
+            .all(|r| r.base_ref == base && r.head_ref == head),
+        "shards of different ranges: every report must be `{base}...{head}`"
+    );
+    // Ref names are not an identity: two shards that both ran `HEAD` may have run
+    // different commits, and summing them would drop the newer one's mutants.
+    let (base_commit, head_commit) = (&reports[0].base_commit, &reports[0].head_commit);
+    anyhow::ensure!(
+        !base_commit.is_empty()
+            && reports
+                .iter()
+                .all(|r| &r.base_commit == base_commit && &r.head_commit == head_commit),
+        "shards of different commits: every shard must have run the same base and head \
+         commit (re-run them on one checkout)"
+    );
+    // Same commits, different cap (or listing): the shards dealt out different
+    // selections, and mutants can fall between them untested.
+    let selection = &reports[0].selection;
+    anyhow::ensure!(
+        reports.iter().all(|r| &r.selection == selection),
+        "shards of different mutant selections: run every shard with the same \
+         --max-per-function and config"
+    );
+    let settings = &reports[0].test_settings;
+    anyhow::ensure!(
+        reports.iter().all(|r| &r.test_settings == settings),
+        "shards tested under different settings ({settings} vs others): run every \
+         shard with the same --test-tool and --timeout"
+    );
+    // A shard tested against the changed crate only and one tested against the
+    // whole workspace count survivors differently; their sum means nothing.
+    let scope = reports[0].rust_tests_changed_crate_only;
+    anyhow::ensure!(
+        reports
+            .iter()
+            .all(|r| r.rust_tests_changed_crate_only == scope),
+        "shards of different test scopes: run every shard with the same `--test-workspace` setting"
+    );
+
+    reports.sort_by_key(|r| index(r).map(|(k, _)| k));
+    let mut rest = reports.split_off(1);
+    let mut merged = reports.remove(0);
+    for r in rest.drain(..) {
+        merged.tested += r.tested;
+        merged.caught += r.caught;
+        merged.timed_out += r.timed_out;
+        merged.unviable += r.unviable;
+        merged.not_tested_budget += r.not_tested_budget;
+        merged.survivors.extend(r.survivors);
+        merged.survivor_occurrence.extend(r.survivor_occurrence);
+        if merged.preflight.is_green() && !r.preflight.is_green() {
+            merged.preflight = r.preflight;
+        }
+        merged.duration_secs = merged.duration_secs.max(r.duration_secs);
+    }
+    merged.shard = None;
+    Ok(merged)
+}
+
+/// Read the survivor identities a previous comment carried, if any.
+pub fn parse_survivor_state(comment_body: &str) -> Option<Vec<String>> {
+    parse_state(comment_body, SURVIVOR_STATE_PREFIX)
+}
+
+/// Read which survivors a previous comment recorded as inline-commented.
+pub fn parse_inlined_state(comment_body: &str) -> Option<Vec<String>> {
+    parse_state(comment_body, INLINED_STATE_PREFIX)
+}
+
+fn parse_state(comment_body: &str, prefix: &str) -> Option<Vec<String>> {
+    let start = comment_body.find(prefix)? + prefix.len();
+    let rest = &comment_body[start..];
+    let end = rest.find(" -->")?;
+    serde_json::from_str(&rest[..end]).ok()
+}
+
+/// A state block, with `--` escaped so no identity can close the comment.
+fn state_block(prefix: &str, keys: &[String]) -> String {
+    let json = serde_json::to_string(keys)
+        .expect("a list of strings serialises")
+        .replace("--", "-\\u002d");
+    format!("\n{prefix}{json} -->\n")
 }
 
 impl GateReport {
@@ -209,15 +401,27 @@ impl GateReport {
             survivors: Vec::new(),
             timed_out: 0,
             unviable: 0,
+            rust_tests_changed_crate_only: false,
+            not_tested_budget: 0,
+            shard: None,
+            base_commit: String::new(),
+            head_commit: String::new(),
+            selection: String::new(),
+            test_settings: String::new(),
+            survivor_occurrence: Default::default(),
             zero_assertion_tests: Vec::new(),
             debt: None,
             slop: None,
             security: None,
             convention: None,
+            weakened_tests: None,
             docs: None,
             mcp: None,
             turnover: None,
             verdict: Verdict::Pass,
+            previous_survivors: None,
+            previous_inlined: None,
+            inlined: Vec::new(),
             duration_secs: 0.0,
         }
     }
@@ -225,6 +429,72 @@ impl GateReport {
     /// Survivors ordered most-dangerous-first, each paired with its severity.
     pub fn ranked_survivors(&self) -> Vec<(Severity, &Mutant)> {
         severity::rank(&self.survivors)
+    }
+
+    /// Each survivor's identity across pushes: `file|mutation|n`, where `n`
+    /// counts the same mutation in the same file in line order. The line itself
+    /// is left out, so a survivor keeps its identity when code above it moves.
+    pub fn survivor_keys(&self) -> Vec<(String, &Mutant)> {
+        let mut ordered: Vec<&Mutant> = self.survivors.iter().collect();
+        ordered.sort_by(|a, b| (&a.file, a.line, a.column).cmp(&(&b.file, b.line, b.column)));
+        let mut seen: std::collections::HashMap<(&str, &str), usize> =
+            std::collections::HashMap::new();
+        ordered
+            .into_iter()
+            .map(|m| {
+                let counted = seen.entry((&m.file, &m.description)).or_insert(0);
+                // The stable occurrence when the engine gave one (Rust), else the
+                // count among survivors.
+                let n = self
+                    .survivor_occurrence
+                    .get(&m.name)
+                    .map_or(*counted, |&o| o as usize);
+                let key = format!("{}|{}|{}", m.file, m.description, n);
+                *counted += 1;
+                (key, m)
+            })
+            .collect()
+    }
+
+    /// Did this run re-test every survivor the previous one could have had?
+    fn mutation_complete(&self) -> bool {
+        self.preflight.is_green() && self.not_tested_budget == 0
+    }
+
+    /// New / still open / resolved against [`previous_survivors`](Self::previous_survivors).
+    pub fn since_last_run(&self) -> Option<SinceLastRun> {
+        let previous = self.previous_survivors.as_ref()?;
+        let current: Vec<String> = self.survivor_keys().into_iter().map(|(k, _)| k).collect();
+        let new: Vec<String> = current
+            .iter()
+            .filter(|k| !previous.contains(k))
+            .cloned()
+            .collect();
+        let resolved = self.mutation_complete().then(|| {
+            previous
+                .iter()
+                .filter(|k| !current.contains(k))
+                .cloned()
+                .collect()
+        });
+        Some(SinceLastRun {
+            still_open: current.len() - new.len(),
+            new,
+            resolved,
+        })
+    }
+
+    /// The identities to carry to the next run. After an incomplete run the
+    /// previous ones are kept too: a survivor that was not re-tested must not
+    /// come back as "new" once it is.
+    fn survivor_state(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.survivor_keys().into_iter().map(|(k, _)| k).collect();
+        if !self.mutation_complete() {
+            keys.extend(self.previous_survivors.iter().flatten().cloned());
+        }
+        keys.sort();
+        keys.dedup();
+        keys
     }
 
     /// Render the human-readable report for the job log.
@@ -281,6 +551,15 @@ impl GateReport {
                 self.unviable,
                 self.survivors.len()
             ));
+            if self.rust_tests_changed_crate_only {
+                out.push_str("tests:      changed crate(s) only (--test-workspace to widen)\n");
+            }
+            if self.not_tested_budget > 0 {
+                out.push_str(&format!(
+                    "budget:     {} mutant(s) NOT TESTED — the mutation budget ran out\n",
+                    self.not_tested_budget
+                ));
+            }
         } else {
             out.push_str("            suite not green & stable — mutation suppressed.\n");
         }
@@ -314,6 +593,12 @@ impl GateReport {
                 "security:   score {}/100 ({} anti-pattern(s))\n",
                 sec.score,
                 sec.findings.len()
+            ));
+        }
+        if let Some(w) = &self.weakened_tests {
+            out.push_str(&format!(
+                "weakened:   {} test(s) removed or checking less\n",
+                w.findings.len()
             ));
         }
         if let Some(conv) = &self.convention {
@@ -395,6 +680,14 @@ impl GateReport {
                 }
             }
         }
+        if let Some(w) = &self.weakened_tests {
+            if !w.findings.is_empty() {
+                out.push_str("\nWeakened tests (advisory):\n");
+                for f in &w.findings {
+                    out.push_str(&format!("  • [{}] {}  {}\n", f.rule, f.file, f.message));
+                }
+            }
+        }
         if let Some(conv) = &self.convention {
             if !conv.findings.is_empty() {
                 out.push_str("\nConvention / hallucinated imports (advisory):\n");
@@ -473,23 +766,62 @@ impl GateReport {
             out.push('\n');
         }
 
+        let since = self.since_last_run();
+        if let Some(d) = &since {
+            let resolved = match &d.resolved {
+                Some(r) => format!("{} resolved", r.len()),
+                None => "earlier ones not re-checked (incomplete run)".to_string(),
+            };
+            out.push_str(&format!(
+                "**Since the last run:** {} new · {} still open · {resolved}\n\n",
+                d.new.len(),
+                d.still_open
+            ));
+        }
+
+        // Before the survivors: a "passed" badge over a partial run must not
+        // read as a full one.
+        if self.not_tested_budget > 0 {
+            out.push_str(&format!(
+                "> ⏱ **{} mutant(s) not tested.** The mutation budget ran out before they \
+                 finished, so they count as neither caught nor surviving. Raise `budget`, \
+                 or shard the run, to cover them.\n\n",
+                self.not_tested_budget
+            ));
+        }
+
         if !self.survivors.is_empty() {
             out.push_str("### Surviving mutations\n\n");
             out.push_str(
                 "Your tests pass even with these changes applied (most severe first):\n\n",
             );
             out.push_str("| Severity | Location | Mutation |\n| --- | --- | --- |\n");
+            let keys = self.survivor_keys();
+            let is_new = |m: &Mutant| {
+                since.as_ref().is_some_and(|d| {
+                    keys.iter()
+                        .any(|(k, km)| std::ptr::eq(*km, m) && d.new.contains(k))
+                })
+            };
             for (sev, m) in self.ranked_survivors() {
                 out.push_str(&format!(
-                    "| {} | `{}:{}:{}` | {} |\n",
+                    "| {} | `{}:{}:{}` | {}{} |\n",
                     severity_badge(sev),
                     m.file,
                     m.line,
                     m.column,
+                    if is_new(m) { "🆕 " } else { "" },
                     m.description
                 ));
             }
             out.push('\n');
+            if self.rust_tests_changed_crate_only {
+                out.push_str(
+                    "> Rust mutants ran only the changed crate's own tests. If another crate's \
+                     tests cover this code, re-run with `--test-workspace` (Action input \
+                     `test-workspace: true`) before writing a test.\n\n",
+                );
+            }
         }
 
         if let Some(debt) = &self.debt {
@@ -560,6 +892,24 @@ impl GateReport {
                     out.push_str(&format!(
                         "| `{}` | `{}:{}` | {} |\n",
                         f.rule, f.file, f.line, f.message
+                    ));
+                }
+                out.push('\n');
+            }
+        }
+
+        if let Some(w) = &self.weakened_tests {
+            if !w.findings.is_empty() {
+                out.push_str("### Weakened tests (advisory)\n\n");
+                out.push_str(
+                    "Mutation testing cannot see these: a deleted test or a dropped \
+                     assertion changes no code for it to mutate.\n\n",
+                );
+                out.push_str("| Rule | File | Detail |\n| --- | --- | --- |\n");
+                for f in &w.findings {
+                    out.push_str(&format!(
+                        "| `{}` | `{}` | {} |\n",
+                        f.rule, f.file, f.message
                     ));
                 }
                 out.push('\n');
@@ -687,6 +1037,10 @@ impl GateReport {
             .as_ref()
             .is_none_or(|s| s.findings.is_empty());
         let docs_clear = self.docs.as_ref().is_none_or(|s| s.findings.is_empty());
+        let weakened_clear = self
+            .weakened_tests
+            .as_ref()
+            .is_none_or(|s| s.findings.is_empty());
         let mcp_clear = self.mcp.as_ref().is_none_or(|m| m.all_clear());
         if self.survivors.is_empty()
             && self.zero_assertion_tests.is_empty()
@@ -694,6 +1048,7 @@ impl GateReport {
             && security_clear
             && convention_clear
             && docs_clear
+            && weakened_clear
             && mcp_clear
         {
             // The MCP clause is conditional on the lane having *run*. Every
@@ -707,7 +1062,47 @@ impl GateReport {
                 out.push_str("Every probed MCP server answered the negative-path sweep.\n");
             }
         }
+
+        if let Some(resolved) = since.as_ref().and_then(|d| d.resolved.as_ref()) {
+            if !resolved.is_empty() {
+                out.push_str(&format!(
+                    "\n<details><summary>Resolved since the last run ({})</summary>\n\n",
+                    resolved.len()
+                ));
+                for key in resolved {
+                    // file|mutation|n — the mutation may itself contain `|`.
+                    let (file, rest) = key.split_once('|').unwrap_or((key, ""));
+                    let mutation = rest.rsplit_once('|').map_or(rest, |(m, _)| m);
+                    out.push_str(&format!("- `{file}` — {mutation}\n"));
+                }
+                out.push_str("\n</details>\n");
+            }
+        }
+
+        // `--` escaped so a mutation description can never close the comment.
+        out.push_str(&state_block(SURVIVOR_STATE_PREFIX, &self.survivor_state()));
+        out.push_str(&state_block(INLINED_STATE_PREFIX, &self.inlined_state()));
         out
+    }
+
+    /// Survivors that have an inline comment, to carry to the next run: those
+    /// recorded before that still exist, plus the ones this run posted.
+    fn inlined_state(&self) -> Vec<String> {
+        // Filtered by what the survivor state carries, not by this run's
+        // survivors: after an incomplete run that includes survivors it did not
+        // re-test, and forgetting their inline comment would repeat it.
+        let carried = self.survivor_state();
+        let mut keys: Vec<String> = self
+            .previous_inlined
+            .iter()
+            .flatten()
+            .filter(|k| carried.contains(k))
+            .chain(&self.inlined)
+            .cloned()
+            .collect();
+        keys.sort();
+        keys.dedup();
+        keys
     }
 
     /// Render the report as pretty JSON for machine consumption.
@@ -872,6 +1267,231 @@ mod tests {
         assert!(crit < med, "critical survivor must be listed first");
         assert!(md.contains("Severity"));
         assert!(md.contains("critical"));
+    }
+
+    #[test]
+    fn narrowed_test_scope_is_explained_where_the_survivors_are() {
+        // With tests scoped to the changed crate (the 0.6.0 default), a survivor
+        // may be caught by another crate's tests. The report must say so next
+        // to the survivors, not leave the reader to guess.
+        let mut r = GateReport::new("main", "HEAD");
+        r.changed_rust_files = vec!["a/src/lib.rs".into()];
+        r.survivors = vec![survivor("a/src/lib.rs", 2, "replace + with -")];
+        r.rust_tests_changed_crate_only = true;
+        assert!(r.render_markdown().contains("--test-workspace"));
+        assert!(r.render_text().contains("changed crate(s) only"));
+
+        // Whole-workspace tests: nothing to explain.
+        r.rust_tests_changed_crate_only = false;
+        assert!(!r.render_markdown().contains("--test-workspace"));
+        assert!(!r.render_text().contains("changed crate(s) only"));
+
+        // Narrowed but no survivors: the PR comment stays quiet about it.
+        r.rust_tests_changed_crate_only = true;
+        r.survivors.clear();
+        assert!(!r.render_markdown().contains("--test-workspace"));
+    }
+
+    fn green(survivors: Vec<Mutant>) -> GateReport {
+        let mut r = GateReport::new("main", "HEAD");
+        r.changed_rust_files = vec!["src/x.rs".into()];
+        r.preflight = PreflightOutcome::Passed { runs: 1 };
+        r.survivors = survivors;
+        r
+    }
+
+    fn shard_report(k: usize, n: usize, survivors: Vec<Mutant>, caught: usize) -> GateReport {
+        let mut r = green(survivors);
+        r.shard = Some(format!("{k}/{n}"));
+        r.base_commit = "b0".into();
+        r.head_commit = "h1".into();
+        r.selection = "abc/4".into();
+        r.test_settings = "tool=cargo;timeout=60s".into();
+        r.candidates = 10;
+        r.caught = caught;
+        r.tested = caught + r.survivors.len();
+        r
+    }
+
+    #[test]
+    fn shards_merge_into_the_whole_run() {
+        let merged = merge(vec![
+            shard_report(2, 2, vec![survivor("src/x.rs", 9, "replace > with >=")], 3),
+            shard_report(1, 2, vec![survivor("src/x.rs", 3, "replace + with -")], 4),
+        ])
+        .unwrap();
+        assert_eq!(merged.survivors.len(), 2);
+        assert_eq!(merged.caught, 7);
+        assert_eq!(merged.tested, 9);
+        assert_eq!(merged.candidates, 10, "listed once, not once per shard");
+        assert_eq!(merged.shard, None);
+    }
+
+    #[test]
+    fn a_merge_refuses_a_missing_duplicated_or_foreign_shard() {
+        let err = |rs| merge(rs).unwrap_err().to_string();
+        assert!(err(vec![
+            shard_report(1, 3, vec![], 1),
+            shard_report(2, 3, vec![], 1)
+        ])
+        .contains("exactly one report per shard"));
+        assert!(err(vec![
+            shard_report(1, 2, vec![], 1),
+            shard_report(1, 2, vec![], 1)
+        ])
+        .contains("exactly one report per shard"));
+        assert!(err(vec![
+            shard_report(1, 2, vec![], 1),
+            shard_report(2, 3, vec![], 1)
+        ])
+        .contains("different runs"));
+        assert!(err(vec![green(vec![])]).contains("no `shard`"));
+        let mut workspace = shard_report(2, 2, vec![], 1);
+        workspace.rust_tests_changed_crate_only = !workspace.rust_tests_changed_crate_only;
+        assert!(err(vec![shard_report(1, 2, vec![], 1), workspace]).contains("test scopes"));
+        // Both said `HEAD`, but shard 2 ran a newer commit.
+        let mut newer = shard_report(2, 2, vec![], 1);
+        newer.head_commit = "h2".into();
+        assert!(err(vec![shard_report(1, 2, vec![], 1), newer]).contains("different commits"));
+        // Same commits, a different cap on shard 2.
+        let mut capped = shard_report(2, 2, vec![], 1);
+        capped.selection = "other/3".into();
+        assert!(err(vec![shard_report(1, 2, vec![], 1), capped]).contains("mutant selections"));
+        // Same mutants, a longer per-mutant timeout on shard 2.
+        let mut slower = shard_report(2, 2, vec![], 1);
+        slower.test_settings = "tool=cargo;timeout=300s".into();
+        assert!(err(vec![shard_report(1, 2, vec![], 1), slower]).contains("different settings"));
+    }
+
+    #[test]
+    fn a_red_shard_makes_the_merged_run_red() {
+        let mut red = shard_report(2, 2, vec![], 0);
+        red.preflight = PreflightOutcome::Failed {
+            run: 1,
+            detail: "boom".into(),
+        };
+        let merged = merge(vec![shard_report(1, 2, vec![], 5), red]).unwrap();
+        assert!(!merged.preflight.is_green());
+    }
+
+    #[test]
+    fn a_first_run_carries_its_state_and_claims_no_delta() {
+        let r = green(vec![survivor("src/x.rs", 3, "replace + with -")]);
+        let md = r.render_markdown();
+        assert!(!md.contains("Since the last run"));
+        assert_eq!(
+            parse_survivor_state(&md),
+            Some(vec!["src/x.rs|replace + with -|0".to_string()])
+        );
+    }
+
+    #[test]
+    fn the_next_run_says_what_is_new_still_open_and_resolved() {
+        let mut r = green(vec![
+            survivor("src/x.rs", 3, "replace + with -"), // still open
+            survivor("src/x.rs", 9, "replace > with >="), // new
+        ]);
+        r.previous_survivors = Some(vec![
+            "src/x.rs|replace + with -|0".into(),
+            "src/y.rs|replace true with false|0".into(), // fixed since
+        ]);
+        let md = r.render_markdown();
+        assert!(md.contains("**Since the last run:** 1 new · 1 still open · 1 resolved"));
+        assert!(md.contains("🆕 replace > with >="));
+        assert!(!md.contains("🆕 replace + with -"));
+        assert!(md.contains("Resolved since the last run (1)"));
+        assert!(md.contains("- `src/y.rs` — replace true with false"));
+    }
+
+    #[test]
+    fn an_incomplete_run_does_not_call_anything_resolved() {
+        let mut r = green(vec![]);
+        r.not_tested_budget = 4;
+        r.previous_survivors = Some(vec!["src/x.rs|replace + with -|0".into()]);
+        let md = r.render_markdown();
+        assert!(md.contains("earlier ones not re-checked (incomplete run)"));
+        assert!(!md.contains("Resolved since the last run"));
+        // Carried forward, so it does not come back as "new" once re-tested.
+        assert_eq!(
+            parse_survivor_state(&md),
+            Some(vec!["src/x.rs|replace + with -|0".to_string()])
+        );
+    }
+
+    #[test]
+    fn survivor_state_cannot_close_its_own_comment() {
+        let r = green(vec![survivor("src/x.rs", 3, "replace --> with <--")]);
+        let md = r.render_markdown();
+        let state_line = md
+            .lines()
+            .find(|l| l.starts_with(SURVIVOR_STATE_PREFIX))
+            .unwrap();
+        assert_eq!(state_line.matches("-->").count(), 1, "{state_line}");
+        assert_eq!(
+            parse_survivor_state(&md),
+            Some(vec!["src/x.rs|replace --> with <--|0".to_string()])
+        );
+    }
+
+    #[test]
+    fn killing_one_identical_mutation_does_not_renumber_the_other() {
+        // Last run: the same mutation survived at lines 3 and 9 (occurrences 0, 1).
+        // This run the one at line 3 is killed. The survivor at line 9 must keep
+        // `|1` — counted over survivors it would become `|0`, and the report
+        // would call the killed one open and the survivor resolved.
+        let mut r = green(vec![survivor("src/x.rs", 9, "replace + with -")]);
+        r.survivor_occurrence.insert(r.survivors[0].name.clone(), 1);
+        r.previous_survivors = Some(vec![
+            "src/x.rs|replace + with -|0".into(),
+            "src/x.rs|replace + with -|1".into(),
+        ]);
+        let d = r.since_last_run().unwrap();
+        assert!(d.new.is_empty());
+        assert_eq!(d.still_open, 1);
+        assert_eq!(
+            d.resolved,
+            Some(vec!["src/x.rs|replace + with -|0".to_string()])
+        );
+    }
+
+    #[test]
+    fn an_incomplete_run_keeps_the_inline_record_of_what_it_carries_forward() {
+        let mut r = green(vec![]);
+        r.not_tested_budget = 3; // the survivor below was not re-tested
+        r.previous_survivors = Some(vec!["src/x.rs|replace + with -|0".into()]);
+        r.previous_inlined = Some(vec!["src/x.rs|replace + with -|0".into()]);
+        let md = r.render_markdown();
+        assert_eq!(
+            parse_inlined_state(&md),
+            Some(vec!["src/x.rs|replace + with -|0".to_string()]),
+            "forgetting it would post its inline comment again"
+        );
+    }
+
+    #[test]
+    fn identical_mutations_in_one_file_keep_separate_identities() {
+        let r = green(vec![
+            survivor("src/x.rs", 9, "replace + with -"),
+            survivor("src/x.rs", 3, "replace + with -"),
+        ]);
+        let keys: Vec<String> = r.survivor_keys().into_iter().map(|(k, _)| k).collect();
+        assert_eq!(
+            keys,
+            ["src/x.rs|replace + with -|0", "src/x.rs|replace + with -|1"]
+        );
+    }
+
+    #[test]
+    fn untested_mutants_are_reported_as_untested() {
+        let mut r = GateReport::new("main", "HEAD");
+        r.changed_rust_files = vec!["src/x.rs".into()];
+        r.preflight = PreflightOutcome::Passed { runs: 1 };
+        assert!(!r.render_markdown().contains("not tested"));
+        assert!(!r.render_text().contains("NOT TESTED"));
+
+        r.not_tested_budget = 3;
+        assert!(r.render_markdown().contains("3 mutant(s) not tested"));
+        assert!(r.render_text().contains("3 mutant(s) NOT TESTED"));
     }
 
     #[test]

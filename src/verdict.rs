@@ -34,6 +34,16 @@ pub fn decide(report: &GateReport, cfg: &Config) -> Verdict {
         }
     }
 
+    // `--budget` stops the run and leaves mutants untested. That is a warning in
+    // the report by default: nothing untested was shown to be wrong. Teams that
+    // want a full run to be mandatory opt in.
+    if cfg.block_on_budget && report.not_tested_budget > 0 {
+        reasons.push(format!(
+            "{} mutant(s) were not tested within the mutation budget",
+            report.not_tested_budget
+        ));
+    }
+
     if cfg.block_on_zero_assertion_tests && !report.zero_assertion_tests.is_empty() {
         reasons.push(format!(
             "{} test(s) on the changed surface assert nothing",
@@ -121,15 +131,16 @@ pub fn decide(report: &GateReport, cfg: &Config) -> Verdict {
 }
 
 /// Block reasons from the pattern lanes for the configured targets. A target is
-/// a lane name (`slop`/`security`/`convention`/`all`) or a rule id; lane names
-/// gate on any finding in that lane, rule ids gate on a matching finding in any
-/// lane.
+/// a lane name (`slop`/`security`/`convention`/`docs`/`weakened-tests`/`all`)
+/// or a rule id; lane names gate on any finding in that lane, rule ids gate on
+/// a matching finding in any lane.
 fn pattern_block_reasons(report: &GateReport, targets: &[String]) -> Vec<String> {
-    let lanes: [(&str, &Option<PatternReport>); 4] = [
+    let lanes: [(&str, &Option<PatternReport>); 5] = [
         ("slop", &report.slop),
         ("security", &report.security),
         ("convention", &report.convention),
         ("docs", &report.docs),
+        ("weakened-tests", &report.weakened_tests),
     ];
     let mut reasons = Vec::new();
     for target in targets {
@@ -240,6 +251,30 @@ mod tests {
     fn clean_run_passes() {
         let r = report_with_survivors(0);
         assert_eq!(decide(&r, &Config::default()), Verdict::Pass);
+    }
+
+    #[test]
+    fn untested_mutants_warn_by_default_and_block_on_request() {
+        let mut r = report_with_survivors(0);
+        r.not_tested_budget = 2;
+        assert_eq!(decide(&r, &Config::default()), Verdict::Pass);
+
+        let strict = Config {
+            block_on_budget: true,
+            ..Config::default()
+        };
+        match decide(&r, &strict) {
+            Verdict::Block { reasons } => {
+                assert!(reasons
+                    .iter()
+                    .any(|x| x.contains("2 mutant(s) were not tested")))
+            }
+            Verdict::Pass => panic!("--block-on-budget must block on untested mutants"),
+        }
+
+        // A budget that left nothing untested has nothing to block on.
+        r.not_tested_budget = 0;
+        assert_eq!(decide(&r, &strict), Verdict::Pass);
     }
 
     #[test]

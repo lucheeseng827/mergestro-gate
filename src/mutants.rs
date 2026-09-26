@@ -22,6 +22,9 @@ pub struct MutationResults {
     pub caught: usize,
     pub timed_out: usize,
     pub unviable: usize,
+    /// Kept mutants the budget stopped before they finished: not caught, not
+    /// surviving — unknown. Always 0 without a budget.
+    pub not_tested: usize,
 }
 
 impl MutationResults {
@@ -91,6 +94,69 @@ pub fn apply_cap(candidates: Vec<Mutant>, cap: usize) -> CapSelection {
     CapSelection { kept, excluded }
 }
 
+/// A stable identity for each kept mutant: its occurrence among the kept
+/// mutants with the same file and mutation, in listing (source) order. Counted
+/// over *every* kept candidate, before sharding, so killing one mutant does not
+/// renumber an identical one below it — which counting only the survivors did.
+pub fn occurrences(kept: &[Mutant]) -> std::collections::BTreeMap<String, u32> {
+    let mut seen: std::collections::HashMap<(&str, &str), u32> = std::collections::HashMap::new();
+    kept.iter()
+        .map(|m| {
+            let n = seen.entry((&m.file, &m.description)).or_insert(0);
+            let id = (m.name.clone(), *n);
+            *n += 1;
+            id
+        })
+        .collect()
+}
+
+/// Give each survivor what its listing carried and `missed.txt` does not: the
+/// enclosing function.
+pub fn enrich(survivors: &mut [Mutant], kept: &[Mutant]) {
+    for s in survivors.iter_mut().filter(|s| s.function.is_none()) {
+        if let Some(c) = kept.iter().find(|c| c.name == s.name) {
+            s.function = c.function.clone();
+        }
+    }
+}
+
+/// A fingerprint of the capped selection, before sharding: shards of one run
+/// must have selected the same mutants (same cap, same listing), or their merge
+/// can leave some untested. FNV-1a over the names, so it is stable across
+/// processes and toolchains.
+pub fn selection_fingerprint(kept: &[Mutant]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for m in kept {
+        for b in m.name.bytes().chain(std::iter::once(b'\n')) {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    format!("{h:016x}/{}", kept.len())
+}
+
+/// Keep shard `k` of `n` (1-based) of the capped selection: kept mutants are
+/// dealt round-robin in listing order, which is deterministic, so every shard
+/// computes the same split. The rest join the excluded set, so the existing
+/// `--exclude-re` machinery keeps them out of the run and the accounting stays
+/// exact per shard. Round-robin rather than slices, so one function's mutants
+/// spread across shards instead of landing on one.
+pub fn take_shard(selection: CapSelection, k: usize, n: usize) -> CapSelection {
+    let CapSelection { kept, mut excluded } = selection;
+    let mut mine = Vec::new();
+    for (i, m) in kept.into_iter().enumerate() {
+        if i % n == k - 1 {
+            mine.push(m);
+        } else {
+            excluded.push(m);
+        }
+    }
+    CapSelection {
+        kept: mine,
+        excluded,
+    }
+}
+
 /// Build the `cargo mutants` argument list for a diff-scoped run.
 fn mutation_args(
     cfg: &Config,
@@ -103,29 +169,47 @@ fn mutation_args(
         "mutants".into(),
         "--in-diff".into(),
         diff_path.to_string_lossy().into_owned(),
-        "--jobs".into(),
-        cfg.jobs.to_string(),
+    ];
+    // In place, cargo-mutants tests one mutant at a time and refuses `--jobs`
+    // outright ("cannot be used with '--in-place'"). What it buys is the
+    // checkout's own target/: the scratch copy starts without one, so its first
+    // build is cold even right after the pre-flight built the same tree.
+    if cfg.in_place {
+        args.push("--in-place".into());
+    } else {
+        args.push("--jobs".into());
+        args.push(cfg.jobs.to_string());
+    }
+    args.extend([
         "--timeout".into(),
         cfg.timeout_secs.to_string(),
         "--output".into(),
         output_dir.to_string_lossy().into_owned(),
-    ];
+    ]);
     // Faster test runner when requested: nextest runs each test in its own
     // process, highly parallel. cargo-mutants accepts `--test-tool nextest`.
     if cfg.test_tool == "nextest" {
         args.push("--test-tool".into());
         args.push("nextest".into());
+        // nextest fails a run that matches no tests, and cargo-mutants counts that
+        // failure as a caught mutant. So a changed crate with no tests of its own
+        // (one tested from another crate) would report every mutant as caught,
+        // and with the baseline skipped nothing else would notice. With
+        // `--no-tests=pass` a run with no tests catches nothing, as under
+        // `cargo test`: those mutants survive, and the report says why. (nextest
+        // has had the flag since 0.9.75, and fails such a run by default since
+        // 0.9.85.)
+        args.push("--cargo-test-arg=--no-tests=pass".into());
     }
     // Scope *mutation* to the package(s) the changed files belong to — we only
     // want to mutate the changed crate, and this avoids building unrelated crates
     // as mutants. With no resolved package we omit `--package` and fall back to
     // cargo-mutants' default (whole workspace), which is always safe.
     //
-    // Crucially, by default we still run the *whole workspace's* tests against
-    // each mutant (`--test-workspace`), so a mutant caught only by a downstream
-    // crate's tests is still caught — scoping mutation must not silently turn
-    // those into false survivors. Teams that want the faster (narrower) behaviour
-    // opt in via `test_changed_package_only`.
+    // By default each mutant runs only the changed crate's tests: that is most of
+    // the per-mutant cost in a workspace. `--test-workspace` (cfg
+    // `test_changed_package_only = false`) restores the whole workspace's tests,
+    // so a mutant caught only by a downstream crate's tests is still caught.
     if !packages.is_empty() {
         for p in packages {
             args.push("--package".into());
@@ -136,19 +220,62 @@ fn mutation_args(
             args.push("true".into());
         }
     }
-    // When the determinism pre-flight is skipped, the caller has asserted the
-    // unmutated tree is already green (e.g. CI ran the suite). cargo-mutants'
-    // own baseline build+test then just re-pays that full cycle, so skip it —
-    // a meaningful saving since the baseline is one of the costliest cycles.
-    if cfg.skip_preflight {
-        args.push("--baseline".into());
-        args.push("skip".into());
+    // Under a budget, test in source order rather than shuffled, so which
+    // mutants a stopped run left untested is the same on every rerun.
+    if cfg.budget_secs.is_some() {
+        args.push("--no-shuffle".into());
     }
+    // Always skip cargo-mutants' own baseline. The pipeline only reaches the
+    // mutation phase once the pre-flight is green — it ran the suite and it
+    // passed, or the caller skipped it having proven the tree green already. The
+    // baseline would re-pay a full build+test cycle to learn the same thing, and
+    // with `--timeout` always passed it is not needed to derive a timeout either.
+    args.push("--baseline".into());
+    args.push("skip".into());
     for m in excluded {
         args.push("--exclude-re".into());
         args.push(exclude_pattern(m));
     }
     args
+}
+
+/// The current bytes of each of `files` (repo-relative), for [`restore`] after
+/// an `--in-place` run. A file that does not exist is skipped: a deletion leaves
+/// nothing to mutate. Any other failure to read one is an error, raised before
+/// anything is mutated — a file the snapshot could not keep is one [`restore`]
+/// could not put back.
+pub fn snapshot(repo: &Path, files: &[String]) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+    let mut kept = Vec::new();
+    for rel in files {
+        let path = repo.join(rel);
+        match std::fs::read(&path) {
+            Ok(bytes) => kept.push((path, bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("reading {} before an --in-place run", path.display())
+                })
+            }
+        }
+    }
+    Ok(kept)
+}
+
+/// Put back every snapshotted file whose content changed. Only rewrites what
+/// differs, and says so: a file left mutated means cargo-mutants was stopped
+/// mid-mutant, which a caller should know happened.
+pub fn restore(snapshot: &[(PathBuf, Vec<u8>)]) -> Result<()> {
+    for (path, bytes) in snapshot {
+        if std::fs::read(path).ok().as_deref() != Some(bytes.as_slice()) {
+            std::fs::write(path, bytes)
+                .with_context(|| format!("restoring {} after --in-place", path.display()))?;
+            eprintln!(
+                "slop-gate: restored {} — cargo-mutants was stopped before it could",
+                path.display()
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Resolve the Cargo package name(s) the changed files belong to, by walking up
@@ -232,22 +359,47 @@ pub fn run_mutation(
 ) -> Result<MutationResults> {
     let args = mutation_args(cfg, diff_path, output_dir, excluded, packages);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = runner
-        .run("cargo", &arg_refs, &cfg.repo)
-        .context("running `cargo mutants`")?;
+    let (out, stopped) = match cfg.budget_secs {
+        Some(secs) => runner.run_with_limit(
+            "cargo",
+            &arg_refs,
+            &cfg.repo,
+            std::time::Duration::from_secs(secs),
+        ),
+        None => runner
+            .run("cargo", &arg_refs, &cfg.repo)
+            .map(|o| (o, false)),
+    }
+    .context("running `cargo mutants`")?;
 
     // cargo-mutants exits non-zero *when survivors are found* — that's a
     // signal, not an error. Distinguish "found survivors" from "couldn't run"
     // by whether it produced its output directory.
     let mutants_out = output_dir.join("mutants.out");
     if !mutants_out.is_dir() {
+        if stopped {
+            // The budget ran out before cargo-mutants wrote anything (its first
+            // build can take that long): nothing was tested, nothing is known.
+            return Ok(MutationResults {
+                not_tested: expected,
+                ..MutationResults::default()
+            });
+        }
         bail!(
             "cargo mutants did not produce results (exit {:?}):\n{}",
             out.code,
             out.combined()
         );
     }
-    let results = read_results(&mutants_out)?;
+    let mut results = read_results(&mutants_out)?;
+    if stopped {
+        // cargo-mutants records each mutant as it finishes, so what is on disk
+        // is exactly what completed. The kept remainder is untested — not a
+        // crash, so none of the accounting checks below apply to it.
+        let accounted = results.tested() + results.unviable;
+        results.not_tested = expected.saturating_sub(accounted);
+        return Ok(results);
+    }
 
     // Validate the outcome count against the expected kept count.
     //
@@ -312,6 +464,7 @@ fn read_results(mutants_out: &Path) -> Result<MutationResults> {
         caught,
         timed_out,
         unviable,
+        not_tested: 0,
     })
 }
 
@@ -471,29 +624,147 @@ mod tests {
     }
 
     #[test]
-    fn mutation_args_skip_baseline_only_when_preflight_skipped() {
+    fn mutation_args_always_skip_the_baseline() {
+        // The pipeline only mutates after a green pre-flight (or an explicit skip
+        // that asserts green), so cargo-mutants' own baseline is always redundant.
         use crate::config::Config;
         let diff = Path::new("changed.diff");
         let out = Path::new("out");
+        for skip_preflight in [true, false] {
+            let cfg = Config {
+                skip_preflight,
+                ..Config::default()
+            };
+            let joined = mutation_args(&cfg, diff, out, &[], &[]).join(" ");
+            assert!(
+                joined.contains("--baseline skip"),
+                "skip_preflight={skip_preflight}: {joined}"
+            );
+            assert!(joined.contains("--in-diff"));
+        }
+    }
 
-        // skip_preflight = true → pass `--baseline skip`.
+    #[test]
+    fn restore_puts_back_a_file_left_mutated_and_leaves_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "fn a() -> i32 { 1 }\n").unwrap();
+        std::fs::write(dir.path().join("src/b.rs"), "fn b() -> i32 { 2 }\n").unwrap();
+        let files = vec![
+            "src/a.rs".to_string(),
+            "src/b.rs".to_string(),
+            "src/gone.rs".to_string(),
+        ];
+        let snap = snapshot(dir.path(), &files).unwrap();
+        assert_eq!(snap.len(), 2, "a missing file is simply not snapshotted");
+
+        // One that exists but cannot be read is not skipped: it would be
+        // mutated with nothing kept to put back.
+        std::fs::create_dir_all(dir.path().join("src/dir.rs")).unwrap();
+        assert!(snapshot(dir.path(), &["src/dir.rs".to_string()]).is_err());
+
+        // A killed in-place run left a.rs mutated; b.rs was restored by cargo-mutants.
+        std::fs::write(dir.path().join("src/a.rs"), "fn a() -> i32 { 0 }\n").unwrap();
+        restore(&snap).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("src/a.rs")).unwrap(),
+            "fn a() -> i32 { 1 }\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("src/b.rs")).unwrap(),
+            "fn b() -> i32 { 2 }\n"
+        );
+    }
+
+    #[test]
+    fn occurrences_count_every_kept_mutant_and_fingerprints_tell_selections_apart() {
+        let m = |line: u32, desc: &str| {
+            Mutant::parse_name(&format!("src/a.rs:{line}:1: {desc}")).unwrap()
+        };
+        let kept = vec![
+            m(3, "replace + with -"),
+            m(5, "replace > with >="),
+            m(9, "replace + with -"),
+        ];
+        let ids = occurrences(&kept);
+        assert_eq!(ids[&kept[0].name], 0);
+        assert_eq!(
+            ids[&kept[2].name], 1,
+            "counted over all kept, not survivors"
+        );
+        assert_eq!(ids[&kept[1].name], 0);
+
+        assert_eq!(
+            selection_fingerprint(&kept),
+            selection_fingerprint(&kept.clone())
+        );
+        assert_ne!(
+            selection_fingerprint(&kept),
+            selection_fingerprint(&kept[..2])
+        );
+    }
+
+    #[test]
+    fn shards_partition_the_kept_mutants_round_robin() {
+        let kept: Vec<Mutant> = (1..=7)
+            .map(|i| Mutant::parse_name(&format!("src/a.rs:{i}:1: replace x")).unwrap())
+            .collect();
+        let capped = vec![Mutant::parse_name("src/a.rs:99:1: capped").unwrap()];
+        let mut seen = Vec::new();
+        for k in 1..=3 {
+            let s = take_shard(
+                CapSelection {
+                    kept: kept.clone(),
+                    excluded: capped.clone(),
+                },
+                k,
+                3,
+            );
+            // The capped-out mutant stays excluded in every shard.
+            assert!(s.excluded.iter().any(|m| m.line == 99));
+            assert_eq!(s.kept.len() + s.excluded.len(), 8);
+            seen.extend(s.kept.iter().map(|m| m.line));
+        }
+        seen.sort_unstable();
+        assert_eq!(
+            seen,
+            (1..=7).collect::<Vec<u32>>(),
+            "every mutant in exactly one shard"
+        );
+        // Round-robin, not slices: one function's neighbouring mutants spread
+        // over the shards instead of landing together on one.
+        let first = take_shard(
+            CapSelection {
+                kept,
+                excluded: vec![],
+            },
+            1,
+            3,
+        );
+        let lines: Vec<u32> = first.kept.iter().map(|m| m.line).collect();
+        assert_eq!(lines, [1, 4, 7]);
+    }
+
+    #[test]
+    fn in_place_replaces_jobs_because_cargo_mutants_refuses_both() {
+        use crate::config::Config;
+        let d = Path::new("d");
+        let o = Path::new("o");
+        let copy = mutation_args(&Config::default(), d, o, &[], &[]);
+        assert!(copy.iter().any(|a| a == "--jobs"));
+        assert!(!copy.iter().any(|a| a == "--in-place"));
+
         let cfg = Config {
-            skip_preflight: true,
+            in_place: true,
             ..Config::default()
         };
-        let args = mutation_args(&cfg, diff, out, &[], &[]);
-        let joined = args.join(" ");
-        assert!(joined.contains("--baseline skip"), "got: {joined}");
-        assert!(joined.contains("--in-diff"));
-
-        // skip_preflight = false → no baseline override (cargo-mutants default).
-        let cfg = Config {
-            skip_preflight: false,
-            ..Config::default()
-        };
-        assert!(!mutation_args(&cfg, diff, out, &[], &[])
-            .iter()
-            .any(|a| a == "--baseline"));
+        let in_place = mutation_args(&cfg, d, o, &[], &[]);
+        assert!(in_place.iter().any(|a| a == "--in-place"));
+        // "the argument '--jobs <JOBS>' cannot be used with '--in-place'"
+        assert!(!in_place.iter().any(|a| a == "--jobs"), "got: {in_place:?}");
+        // The rest of the invocation is unchanged.
+        assert!(in_place.iter().any(|a| a == "--timeout"));
+        assert!(in_place.iter().any(|a| a == "--output"));
     }
 
     #[test]
@@ -514,24 +785,49 @@ mod tests {
     }
 
     #[test]
-    fn mutation_args_scopes_mutation_to_packages_but_tests_workspace() {
+    fn mutation_args_nextest_runs_with_no_tests_catch_nothing() {
+        // A crate tested only from another crate has no tests of its own. Under
+        // nextest a run with no tests fails, which cargo-mutants would count as a
+        // catch, so every mutant would read as caught. `--no-tests=pass` makes
+        // them survive, as under `cargo test`.
         use crate::config::Config;
-        let cfg = Config::default(); // test_changed_package_only = false
+        let packages = ["a".to_string()];
+        let nextest = Config {
+            test_tool: "nextest".into(),
+            ..Config::default()
+        };
+        let args = mutation_args(&nextest, Path::new("d"), Path::new("o"), &[], &packages);
+        assert!(
+            args.iter().any(|a| a == "--cargo-test-arg=--no-tests=pass"),
+            "got: {args:?}"
+        );
+        // `cargo test` has no such flag, and already passes a run with no tests.
+        let cargo = Config::default();
+        assert!(
+            !mutation_args(&cargo, Path::new("d"), Path::new("o"), &[], &packages)
+                .iter()
+                .any(|a| a.contains("--no-tests"))
+        );
+    }
+
+    #[test]
+    fn mutation_args_scope_mutation_and_tests_to_packages_by_default() {
+        use crate::config::Config;
+        let cfg = Config::default(); // test_changed_package_only = true since 0.6.0
         let joined = mutation_args(
             &cfg,
             Path::new("d.diff"),
             Path::new("out"),
             &[],
-            &["mergestro-gate".to_string(), "other".to_string()],
+            &["gate".to_string(), "other".to_string()],
         )
         .join(" ");
-        assert!(joined.contains("--package mergestro-gate"));
+        assert!(joined.contains("--package gate"));
         assert!(joined.contains("--package other"));
-        // Default: mutate the changed crate(s) but run the whole workspace's
-        // tests, so downstream catches aren't lost (no false survivors).
-        assert!(joined.contains("--test-workspace true"), "got: {joined}");
+        // Default: each mutant runs only the changed crates' own tests.
+        assert!(!joined.contains("--test-workspace"), "got: {joined}");
 
-        // No packages → no --package and no --test-workspace (cargo-mutants
+        // No packages → no --package and no --test-workspace (cargo-mutants'
         // default whole-workspace mutation already tests the workspace).
         let none = mutation_args(&cfg, Path::new("d.diff"), Path::new("out"), &[], &[]);
         assert!(!none.iter().any(|a| a == "--package"));
@@ -539,10 +835,10 @@ mod tests {
     }
 
     #[test]
-    fn test_changed_package_only_narrows_tests() {
+    fn test_workspace_widens_tests_to_the_whole_workspace() {
         use crate::config::Config;
         let cfg = Config {
-            test_changed_package_only: true,
+            test_changed_package_only: false, // CLI --test-workspace
             ..Config::default()
         };
         let joined = mutation_args(
@@ -550,13 +846,13 @@ mod tests {
             Path::new("d.diff"),
             Path::new("out"),
             &[],
-            &["mergestro-gate".to_string()],
+            &["gate".to_string()],
         )
         .join(" ");
-        // Opt-in: still mutate only the changed crate, but DON'T force workspace
-        // tests — faster, at the cost of possible downstream-only false survivors.
-        assert!(joined.contains("--package mergestro-gate"));
-        assert!(!joined.contains("--test-workspace"));
+        // Still mutate only the changed crate, but test it with the whole
+        // workspace, so a downstream-only catch is not a false survivor.
+        assert!(joined.contains("--package gate"));
+        assert!(joined.contains("--test-workspace true"), "got: {joined}");
     }
 
     #[test]
@@ -776,6 +1072,107 @@ mod tests {
         )
         .expect("non-zero under-count must not bail");
         assert_eq!(results.caught, 1);
+    }
+
+    #[test]
+    fn a_budget_stopped_run_keeps_what_finished_and_counts_the_rest_untested() {
+        use crate::runner::test_support::ScriptedRunner;
+        use tempfile::tempdir;
+
+        // 5 kept, the budget stopped cargo-mutants after 3 finished (1 caught,
+        // 1 missed, 1 unviable). The zero/under-count checks must not fire: this
+        // is not a crash. The 2 unfinished are neither caught nor surviving, and
+        // an unviable mutant did finish, so it is not among them.
+        let work = tempdir().unwrap();
+        let output_dir = work.path().join("out");
+        let mutants_out = output_dir.join("mutants.out");
+        std::fs::create_dir_all(&mutants_out).unwrap();
+        std::fs::write(mutants_out.join("caught.txt"), "src/a.rs:1:1: replace x\n").unwrap();
+        std::fs::write(mutants_out.join("missed.txt"), "src/a.rs:2:1: replace y\n").unwrap();
+        std::fs::write(
+            mutants_out.join("unviable.txt"),
+            "src/a.rs:3:1: replace z\n",
+        )
+        .unwrap();
+
+        let runner = ScriptedRunner::new();
+        runner.push_fail(1, "Error: interrupted");
+        runner.stop_next_at_limit();
+        let cfg = Config {
+            repo: work.path().to_path_buf(),
+            budget_secs: Some(60),
+            ..Config::default()
+        };
+        let results = run_mutation(
+            &runner,
+            &cfg,
+            &work.path().join("diff.patch"),
+            &output_dir,
+            &[],
+            &[],
+            5,
+        )
+        .expect("a budget stop is not an operational failure");
+        assert_eq!(results.caught, 1);
+        assert_eq!(results.survivors.len(), 1);
+        assert_eq!(results.unviable, 1);
+        assert_eq!(results.not_tested, 2);
+        // Deterministic order, so the untested set is the same on a rerun.
+        assert!(runner.calls()[0].args.iter().any(|a| a == "--no-shuffle"));
+    }
+
+    #[test]
+    fn a_budget_that_runs_out_before_any_output_leaves_everything_untested() {
+        use crate::runner::test_support::ScriptedRunner;
+        use tempfile::tempdir;
+
+        let work = tempdir().unwrap();
+        let runner = ScriptedRunner::new();
+        runner.push_fail(1, "");
+        runner.stop_next_at_limit();
+        let cfg = Config {
+            repo: work.path().to_path_buf(),
+            budget_secs: Some(1),
+            ..Config::default()
+        };
+        let results = run_mutation(
+            &runner,
+            &cfg,
+            &work.path().join("diff.patch"),
+            &work.path().join("out"), // no mutants.out ever written
+            &[],
+            &[],
+            4,
+        )
+        .expect("no output within the budget is 'untested', not a crash");
+        assert_eq!(results.tested(), 0);
+        assert_eq!(results.not_tested, 4);
+    }
+
+    #[test]
+    fn without_a_stop_a_missing_output_dir_is_still_an_error() {
+        use crate::runner::test_support::ScriptedRunner;
+        use tempfile::tempdir;
+
+        // A budget that did NOT fire must not excuse a crashed run.
+        let work = tempdir().unwrap();
+        let runner = ScriptedRunner::new();
+        runner.push_fail(101, "boom");
+        let cfg = Config {
+            repo: work.path().to_path_buf(),
+            budget_secs: Some(600),
+            ..Config::default()
+        };
+        assert!(run_mutation(
+            &runner,
+            &cfg,
+            &work.path().join("diff.patch"),
+            &work.path().join("out"),
+            &[],
+            &[],
+            4,
+        )
+        .is_err());
     }
 
     #[test]

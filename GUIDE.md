@@ -148,7 +148,7 @@ line). Leave `release-token` unset for a public action repo. If you gate the
 source in CI instead (see §6).
 
 ```yaml
-      - uses: your-org/private-rust-project/.@v0.5.0
+      - uses: your-org/private-rust-project/.@v0.6.0
         with:
           release-token: ${{ secrets.SLOP_GATE_READ_TOKEN }}   # read access to the action repo
           max-survivors: "0"
@@ -194,25 +194,29 @@ engine rebuilding + re-running the suite once per mutant.** So tuning is about
 making each rebuild cheap, reusing the baseline, and parallelising — in ROI
 order:
 
-> **Workspace scoping (automatic, correctness-preserving).** In a Cargo workspace
-> the gate resolves the package(s) the changed files belong to and passes
-> `--package` so it only *mutates* the changed crate — but by default it still
-> runs the **whole workspace's tests** (`--test-workspace`) against each mutant,
-> so a mutant caught only by a *downstream* crate's tests is still caught (no false
-> survivors). Set `test-changed-package-only` (CLI `--test-changed-package-only`)
-> to narrow tests to the changed crate for more speed, accepting that a
-> downstream-only catch then reads as a survivor.
+> **Workspace scoping (automatic).** In a Cargo workspace the gate resolves the
+> package(s) the changed files belong to and passes `--package`, so it only
+> *mutates* the changed crate, and each mutant runs only **that crate's tests**.
+> That is most of the per-mutant cost in a workspace. If a crate is tested mainly
+> from *another* crate, set `test-workspace` (CLI `--test-workspace`) to run the
+> whole workspace's tests per mutant; otherwise a downstream-only catch reads as a
+> survivor. (Before 0.6.0 the whole workspace was the default.)
 
 1. **Do NOT set `CARGO_INCREMENTAL=0`.** cargo-mutants depends on incremental
    compilation to rebuild only the mutated crate between mutants; disabling it
    forces a near-full recompile *per mutant* — often the single biggest
    slowdown. Leave it unset (or `=1`). It's a common copied-CI default that's
    wrong for mutation testing.
-2. **`Swatinem/rust-cache@v2`** before the gate step — warms `target/` so the
-   baseline build isn't paid cold each run.
-3. **`--skip-preflight`** (when CI already ran your suite green): the gate then
-   passes `--baseline skip` to cargo-mutants, dropping a whole baseline
-   build+test cycle.
+2. **`Swatinem/rust-cache@v2`** before the gate step, **plus `in-place: true`**.
+   cargo-mutants normally builds mutants in a scratch copy that starts without
+   `target/`, so a cached `target/` only speeds up the pre-flight and every run
+   still pays one cold build for the mutants. In place, the mutants reuse the
+   pre-flight's (cached) build instead — measured on a small crate with two
+   dependencies, the first mutant's build went from 4.0 s to 0.2 s. The cost:
+   mutants run one at a time (`jobs` is ignored).
+3. **`--skip-preflight`** (when CI already ran your suite green): no suite run
+   happens before the first mutant. Without it the gate runs the suite once
+   (`preflight_runs`, default 1) and skips cargo-mutants' own baseline.
 4. **`mold` linker + `sccache`** — link/compile dominate incremental rebuilds;
    both cut real time. `RUSTFLAGS="-C link-arg=-fuse-ld=mold"` + `sccache` as
    `RUSTC_WRAPPER`.

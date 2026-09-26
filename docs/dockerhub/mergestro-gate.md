@@ -53,10 +53,10 @@ nothing else — no queue, no webhook, no long-running service.
 | Tag | Notes |
 |---|---|
 | `latest` | newest release |
-| `0.5.0` | pinned version (= current `latest`) |
+| `0.6.0` | pinned version (= current `latest`) |
 | `0.5`   | latest `0.5.x` |
 
-Pin a version in CI: `mancube/mergestro-gate:0.5.0`.
+Pin a version in CI: `mancube/mergestro-gate:0.6.0`.
 
 ## What's inside
 
@@ -75,19 +75,19 @@ checkout with the base ref fetched (e.g. `git fetch origin main`).
 
 ```bash
 # Behavioral gate over the working tree's diff vs origin/main:
-docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.5.0 \
+docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.6.0 \
   --repo /work --base origin/main
 
 # Predict the mutant workload first, without building/testing (fast):
-docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.5.0 \
+docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.6.0 \
   estimate --repo /work --base origin/main
 
 # Summarise telemetry from prior runs (--metrics-file output):
-docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.5.0 \
+docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.6.0 \
   analyze --metrics-file /work/slop-gate-metrics.jsonl
 
 # Help / version:
-docker run --rm mancube/mergestro-gate:0.5.0 --help
+docker run --rm mancube/mergestro-gate:0.6.0 --help
 ```
 
 > The gate compiles + tests every mutant in your diff, so wall-clock scales with
@@ -100,7 +100,7 @@ Prefer your own toolchained image? Copy the binary in and bring your own
 
 ```dockerfile
 FROM rust:1-bookworm
-COPY --from=mancube/mergestro-gate:0.5.0 /usr/local/bin/slop-gate /usr/local/bin/slop-gate
+COPY --from=mancube/mergestro-gate:0.6.0 /usr/local/bin/slop-gate /usr/local/bin/slop-gate
 RUN cargo install cargo-mutants
 ENTRYPOINT ["slop-gate"]
 ```

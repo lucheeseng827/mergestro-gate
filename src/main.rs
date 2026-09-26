@@ -80,6 +80,21 @@ enum Command {
     /// Boxed like `Baseline`: it carries the most flags of any subcommand, and
     /// an unboxed variant makes every `Command` the size of this one.
     Progression(Box<ProgressionArgs>),
+
+    /// Combine the `--format json` reports of a sharded run (`--shard k/n`)
+    /// into one: counts summed, the verdict recomputed under the flags given
+    /// here, then printed / commented / written as SARIF once.
+    MergeReports(Box<MergeArgs>),
+}
+
+#[derive(Args, Debug)]
+struct MergeArgs {
+    #[command(flatten)]
+    run: RunArgs,
+
+    /// The shard reports, one per shard (`slop-gate --shard k/n --format json`).
+    #[arg(required = true)]
+    reports: Vec<PathBuf>,
 }
 
 #[derive(Args, Debug)]
@@ -348,11 +363,15 @@ struct RunArgs {
     #[arg(long)]
     skip_preflight: bool,
 
-    /// Narrow mutation tests to the changed crate only (faster, but a mutant
-    /// caught only by a downstream crate's tests then shows as a survivor).
-    /// Default runs the whole workspace's tests against each mutant.
-    #[arg(long)]
+    /// Kept for compatibility: narrowing mutation tests to the changed crate is
+    /// the default since 0.6.0, so this flag no longer changes anything.
+    #[arg(long, conflicts_with = "test_workspace")]
     test_changed_package_only: bool,
+
+    /// Run the whole workspace's tests against each mutant, not only the changed
+    /// crate's (slower; catches a mutant only a downstream crate's tests notice).
+    #[arg(long)]
+    test_workspace: bool,
 
     /// Test runner cargo-mutants drives: `cargo` (default) or `nextest`
     /// (per-process, highly parallel — often 2–3× faster; needs cargo-nextest).
@@ -380,6 +399,26 @@ struct RunArgs {
     #[arg(long)]
     block_on_debt: bool,
 
+    /// Wall-clock limit on the Rust mutation run: `600`, `90s`, `10m`, `1h`.
+    /// Mutants still running at the limit are reported as not tested.
+    #[arg(long, value_parser = parse_duration_secs)]
+    budget: Option<u64>,
+
+    /// Block when the budget left mutants untested (a warning by default).
+    #[arg(long)]
+    block_on_budget: bool,
+
+    /// Run one shard of the Rust mutants, `k/n` (e.g. `2/4`), for a CI matrix;
+    /// combine the shards' `--format json` reports with `merge-reports`.
+    #[arg(long)]
+    shard: Option<String>,
+
+    /// Mutate the checkout itself instead of a scratch copy, reusing the
+    /// pre-flight's build (and a cached target/) instead of a second cold build.
+    /// One mutant at a time (`--jobs` is ignored). For CI checkouts.
+    #[arg(long)]
+    in_place: bool,
+
     /// Block when a pattern lane flags something. Repeatable / comma-separated;
     /// each value is a lane (`slop`|`security`|`convention`|`all`) or a rule id
     /// (e.g. `hardcoded-secret`, `unknown-crate-import`). Advisory if unset.
@@ -398,6 +437,12 @@ struct RunArgs {
     /// Post / update the report as a PR comment (uses the GitHub Actions env).
     #[arg(long)]
     comment: bool,
+
+    /// Also post each surviving mutant without an inline comment yet as a review
+    /// comment on its line (GitHub only). Needs `--comment`: the summary
+    /// comment carries the state that keeps reruns from repeating them.
+    #[arg(long, requires = "comment")]
+    comment_inline: bool,
 
     /// Disable the turnover (maintainability drift) lane for this run.
     #[arg(long)]
@@ -423,6 +468,11 @@ struct RunArgs {
     /// POST the run record to this telemetry endpoint (best-effort).
     #[arg(long)]
     metrics_url: Option<String>,
+
+    /// Also write the findings as SARIF 2.1.0 to this path, for GitHub code
+    /// scanning (`github/codeql-action/upload-sarif`). Independent of `--format`.
+    #[arg(long)]
+    sarif: Option<PathBuf>,
 
     /// Output format for the job log.
     #[arg(long, value_enum, default_value_t = Format::Text)]
@@ -463,6 +513,9 @@ impl RunArgs {
         if self.test_changed_package_only {
             cfg.test_changed_package_only = true;
         }
+        if self.test_workspace {
+            cfg.test_changed_package_only = false;
+        }
         if let Some(v) = &self.test_tool {
             cfg.test_tool = v.clone();
         }
@@ -476,6 +529,9 @@ impl RunArgs {
             // once a server is declared, so leaving it out here would make
             // `--advisory` a half-truth on exactly the repos that adopt it.
             cfg.mcp_fail_on = "never".to_string();
+            // A YAML `block_on_budget: true` too; an explicit --block-on-budget
+            // still wins, applied below like the other explicit block flags.
+            cfg.block_on_budget = false;
         }
         if self.block_on_zero_assertion {
             cfg.block_on_zero_assertion_tests = true;
@@ -496,6 +552,18 @@ impl RunArgs {
         }
         if self.block_on_debt {
             cfg.block_on_debt = true;
+        }
+        if let Some(v) = self.budget {
+            cfg.budget_secs = Some(v);
+        }
+        if self.block_on_budget {
+            cfg.block_on_budget = true;
+        }
+        if self.in_place {
+            cfg.in_place = true;
+        }
+        if let Some(v) = &self.shard {
+            cfg.shard = Some(v.clone());
         }
         if self.no_turnover {
             cfg.turnover.enabled = false;
@@ -523,6 +591,28 @@ impl RunArgs {
         cfg.validate()?;
         Ok(cfg)
     }
+}
+
+/// Parse `--budget`: whole seconds, optionally suffixed `s`, `m` or `h`.
+fn parse_duration_secs(raw: &str) -> Result<u64, String> {
+    let raw = raw.trim();
+    let (digits, unit) = match raw.char_indices().last() {
+        Some((i, c)) if c.is_ascii_alphabetic() => (&raw[..i], c.to_ascii_lowercase()),
+        _ => (raw, 's'),
+    };
+    let n: u64 = digits
+        .parse()
+        .map_err(|_| format!("`{raw}` is not a duration (use e.g. 600, 90s, 10m, 1h)"))?;
+    let secs = match unit {
+        's' => n,
+        'm' => n.saturating_mul(60),
+        'h' => n.saturating_mul(3600),
+        _ => return Err(format!("`{raw}`: unknown unit (use s, m or h)")),
+    };
+    if secs == 0 {
+        return Err("the budget must be at least 1 second".into());
+    }
+    Ok(secs)
 }
 
 fn main() -> ExitCode {
@@ -560,21 +650,36 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        None => match run_gate(cli.run) {
-            // A blocked verdict is a normal, reported outcome — exit 2 so a
-            // required check fails, distinct from operational failure (1).
-            Ok(report) if report.verdict.is_block() => ExitCode::from(EXIT_BLOCKED),
-            Ok(_) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("slop-gate: {e:#}");
-                ExitCode::FAILURE
-            }
-        },
+        Some(Command::MergeReports(args)) => ExitCode::from(verdict_exit(run_merge(&args))),
+        None => ExitCode::from(verdict_exit(run_gate(cli.run))),
+    }
+}
+
+/// The exit code for a run that produced a verdict. A blocked verdict is a
+/// normal, reported outcome — 2, so a required check fails — distinct from an
+/// operational failure (1).
+fn verdict_exit(result: Result<GateReport>) -> u8 {
+    match result {
+        Ok(report) if report.verdict.is_block() => EXIT_BLOCKED,
+        Ok(_) => 0,
+        Err(e) => {
+            eprintln!("slop-gate: {e:#}");
+            1
+        }
     }
 }
 
 fn run_gate(args: RunArgs) -> Result<GateReport> {
     let cfg = args.to_config()?;
+    // One shard's survivors are not the PR's: shards commenting would take turns
+    // overwriting the one summary (and its survivor / inline state). Only the
+    // merged report is published. The effective config, not the flag: a YAML
+    // file can set `shard` too.
+    anyhow::ensure!(
+        cfg.shard.is_none() || !args.comment,
+        "a sharded run (--shard or `shard:` in the config) cannot --comment: write \
+         --format json and publish once with `slop-gate merge-reports --comment`"
+    );
     let want_comment = args.comment;
     let format = args.format;
 
@@ -585,7 +690,12 @@ fn run_gate(args: RunArgs) -> Result<GateReport> {
     // PR comment is best-effort: a token/network hiccup shouldn't change the
     // gate's verdict or fail the step on its own.
     if want_comment {
-        if let Err(e) = comment_on_pr(&report) {
+        // Inline comments may only land on lines the diff shows; read it while
+        // the work directory still exists.
+        let diff = args
+            .comment_inline
+            .then(|| std::fs::read_to_string(work.path().join("changed.diff")).unwrap_or_default());
+        if let Err(e) = comment_on_pr(&report, diff.as_deref()) {
             eprintln!("slop-gate: warning: could not post PR comment: {e:#}");
         }
     }
@@ -593,11 +703,61 @@ fn run_gate(args: RunArgs) -> Result<GateReport> {
     // Validation telemetry is best-effort for the same reason.
     emit_metrics(&report, &cfg);
 
+    emit_report(&report, args.sarif.as_deref(), format)?;
+    Ok(report)
+}
+
+/// Write `--sarif` and print the report in `format`: the tail of a gate run,
+/// shared with `merge-reports`.
+fn emit_report(report: &GateReport, sarif: Option<&Path>, format: Format) -> Result<()> {
+    // Not best-effort: a SARIF path was asked for, and an upload step after
+    // this one would otherwise fail on a missing file, or publish a stale one.
+    if let Some(path) = sarif {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        std::fs::write(path, mergestro_gate::sarif::render(report))
+            .with_context(|| format!("writing SARIF to {}", path.display()))?;
+    }
     match format {
         Format::Text => print!("{}", report.render_text()),
         Format::Json => println!("{}", report.render_json()),
         Format::Markdown => print!("{}", report.render_markdown()),
     }
+    Ok(())
+}
+
+/// Combine the `--format json` reports of one sharded run, recompute the
+/// verdict under this run's flags (a `--max-survivors` budget applies to the
+/// total, not to each shard), and publish it once.
+fn run_merge(args: &MergeArgs) -> Result<GateReport> {
+    // Inline comments may only land on lines the diff shows, and a merge job has
+    // no diff. Refuse the flag rather than accept it and quietly post none.
+    anyhow::ensure!(
+        !args.run.comment_inline,
+        "merge-reports does not post inline review comments (it has no diff to place them on); \
+         drop --comment-inline, or use it on an unsharded run"
+    );
+    let cfg = args.run.to_config()?;
+    let reports = args
+        .reports
+        .iter()
+        .map(|p| {
+            let text =
+                std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
+            serde_json::from_str(&text)
+                .with_context(|| format!("{} is not a `--format json` gate report", p.display()))
+        })
+        .collect::<Result<Vec<GateReport>>>()?;
+    let mut report = mergestro_gate::report::merge(reports)?;
+    report.verdict = mergestro_gate::verdict::decide(&report, &cfg);
+    if args.run.comment {
+        if let Err(e) = comment_on_pr(&report, None) {
+            eprintln!("slop-gate: warning: could not post PR comment: {e:#}");
+        }
+    }
+    emit_report(&report, args.run.sarif.as_deref(), args.run.format)?;
     Ok(report)
 }
 
@@ -645,9 +805,10 @@ fn run_estimate(args: &EstimateArgs) -> Result<()> {
     Ok(())
 }
 
-fn comment_on_pr(report: &GateReport) -> Result<()> {
-    let ctx = github::GithubContext::from_env()?;
-    github::post_or_update_comment(&ctx, &report.render_markdown())
+/// Post the summary comment and, with `inline_diff`, a review of the survivors
+/// that have no inline comment yet.
+fn comment_on_pr(report: &GateReport, inline_diff: Option<&str>) -> Result<()> {
+    github::publish(&github::GithubContext::from_env()?, report, inline_diff)
 }
 
 fn emit_metrics(report: &GateReport, cfg: &Config) {
@@ -1108,6 +1269,7 @@ mod tests {
             preflight_runs: None,
             skip_preflight: false,
             test_changed_package_only: false,
+            test_workspace: false,
             test_tool: None,
             advisory: false,
             block_on_zero_assertion: false,
@@ -1115,7 +1277,12 @@ mod tests {
             block_on_pattern: vec![],
             debt_budget: None,
             block_on_debt: false,
+            budget: None,
+            block_on_budget: false,
+            in_place: false,
+            shard: None,
             comment: false,
+            comment_inline: false,
             no_turnover: false,
             turnover_baseline: None,
             block_on_turnover_drift: false,
@@ -1124,6 +1291,7 @@ mod tests {
             metrics_url: None,
             mcp_fail_on: None,
             specprobe_bin: None,
+            sarif: None,
             format: Format::Text,
         }
     }
@@ -1209,6 +1377,103 @@ mod tests {
         };
         let cfg = args.to_config().unwrap();
         assert_eq!(cfg.block_on_pattern, vec!["convention"]);
+    }
+
+    #[test]
+    fn a_shard_run_may_not_comment() {
+        let args = RunArgs {
+            shard: Some("1/2".into()),
+            comment: true,
+            ..base_args()
+        };
+        let err = run_gate(args).unwrap_err().to_string();
+        assert!(err.contains("merge-reports --comment"), "{err}");
+
+        // The same from a config file, with no --shard on the command line.
+        let dir = tempfile::tempdir().unwrap();
+        let yaml = dir.path().join("gate.yaml");
+        std::fs::write(&yaml, "shard: \"2/2\"\n").unwrap();
+        let from_yaml = RunArgs {
+            config: Some(yaml),
+            comment: true,
+            ..base_args()
+        };
+        let err = run_gate(from_yaml).unwrap_err().to_string();
+        assert!(err.contains("merge-reports --comment"), "{err}");
+    }
+
+    #[test]
+    fn a_blocked_verdict_exits_2_and_an_operational_failure_1() {
+        use mergestro_gate::report::Verdict;
+        let pass = GateReport::new("main", "HEAD");
+        let mut blocked = pass.clone();
+        blocked.verdict = Verdict::Block {
+            reasons: vec!["survivors".into()],
+        };
+        assert_eq!(verdict_exit(Ok(pass)), 0);
+        assert_eq!(verdict_exit(Ok(blocked)), EXIT_BLOCKED);
+        assert_eq!(verdict_exit(Err(anyhow::anyhow!("no git repo"))), 1);
+    }
+
+    #[test]
+    fn emit_report_writes_the_sarif_it_was_asked_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out/nested/mergestro.sarif");
+        emit_report(&GateReport::new("main", "HEAD"), Some(&path), Format::Json).unwrap();
+        let sarif: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(sarif["version"], "2.1.0");
+    }
+
+    #[test]
+    fn budget_parses_the_common_spellings_and_refuses_the_rest() {
+        assert_eq!(parse_duration_secs("600"), Ok(600));
+        assert_eq!(parse_duration_secs("90s"), Ok(90));
+        assert_eq!(parse_duration_secs("10m"), Ok(600));
+        assert_eq!(parse_duration_secs("1H"), Ok(3600));
+        for bad in ["", "m", "0", "0m", "10d", "ten", "-5", "1.5m"] {
+            assert!(parse_duration_secs(bad).is_err(), "should refuse `{bad}`");
+        }
+    }
+
+    #[test]
+    fn advisory_turns_budget_blocking_off_unless_asked_explicitly() {
+        let advisory = RunArgs {
+            advisory: true,
+            budget: Some(60),
+            ..base_args()
+        };
+        let cfg = advisory.to_config().unwrap();
+        assert_eq!(cfg.budget_secs, Some(60));
+        assert!(!cfg.block_on_budget);
+
+        let explicit = RunArgs {
+            advisory: true,
+            block_on_budget: true,
+            ..base_args()
+        };
+        assert!(explicit.to_config().unwrap().block_on_budget);
+    }
+
+    #[test]
+    fn test_scope_defaults_to_the_changed_crate_and_widens_on_request() {
+        // 0.6.0: the fast path is the default; `--test-workspace` is the way back.
+        assert!(base_args().to_config().unwrap().test_changed_package_only);
+        let widened = RunArgs {
+            test_workspace: true,
+            ..base_args()
+        };
+        assert!(!widened.to_config().unwrap().test_changed_package_only);
+
+        // The old opt-in flag still parses, but asking for both is a contradiction.
+        use clap::Parser;
+        assert!(Cli::try_parse_from(["slop-gate", "--test-changed-package-only"]).is_ok());
+        assert!(Cli::try_parse_from([
+            "slop-gate",
+            "--test-changed-package-only",
+            "--test-workspace"
+        ])
+        .is_err());
     }
 
     #[test]

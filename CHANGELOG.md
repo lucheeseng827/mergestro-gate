@@ -6,7 +6,82 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-26
+
+Fast and actionable: fewer suite runs and a time budget, findings on the line
+they are about, and the weakened tests mutation testing cannot see.
+
+### Changed
+- **One suite run before the first mutant, not three.**
+  `preflight_runs` defaults to `1` (was `2`), and cargo-mutants' own baseline is
+  always skipped (`--baseline skip`), since the gate only mutates after a green
+  pre-flight. Set `--preflight-runs 2` to keep catching flaky suites.
+- **Each mutant runs only the changed crate's tests by default.**
+  `test_changed_package_only` now defaults to `true`.
+  `--test-workspace` (Action input `test-workspace`) restores the 0.5.x behaviour
+  of running the whole workspace's tests per mutant; use it when a crate is
+  tested mainly from another, or a downstream-only catch reads as a survivor.
+  `--test-changed-package-only` still parses and now changes nothing.
+
 ### Added
+- **"Since the last run" in the PR comment.** The comment carries the survivors'
+  identities (`file|mutation|n`, no line number, so moving code does not reset
+  them) in a hidden block; the next run reads it back and reports **new · still
+  open · resolved**, marks new survivors 🆕, and lists what was fixed. A run that
+  did not re-test everything (suite not green, budget stop) claims nothing
+  resolved and carries the earlier survivors forward.
+- **`--comment-inline` — survivors as review comments on their line** (Action
+  input `comment-inline`; needs `--comment`, GitHub only). Each survivor is
+  commented once: the summary records which ones have an inline comment, and
+  records them only after the review has posted, so a review that fails (Gitea,
+  a token without review permission, a brief outage) is a warning, the summary
+  still goes out, and those survivors are tried again next run. Only lines the
+  diff shows get a comment — GitHub rejects a whole review for one outside
+  them; the rest stay in the summary. Not available on `merge-reports`, which
+  has no diff; it refuses the flag.
+- **`--shard k/n` and `slop-gate merge-reports`** — split the Rust mutants over a
+  CI matrix. Kept mutants are dealt round-robin in listing order (the same split
+  in every shard); the other engines run on shard 1 only. `merge-reports
+  shard*.json` sums the shards' `--format json` reports, recomputes the verdict
+  under its own flags (so `--max-survivors` applies to the total), and prints /
+  comments / writes SARIF once. It refuses a missing, duplicated or foreign
+  shard: a missing shard is untested mutants, not a clean result. Checked on a
+  real run: 3 shards merged equal the unsharded run exactly.
+- **`--budget` — a wall-clock limit on the Rust mutation run** (`600`, `90s`,
+  `10m`, `1h`; Action input `budget`). cargo-mutants records each mutant as it
+  finishes, so at the limit the run is stopped (SIGTERM, then a hard kill after
+  15 s) and every finished result counts. The rest are reported as **not
+  tested**, never as caught or surviving: a `budget:` line in the job log and a
+  notice at the top of the PR comment. Mutants run in source order under a
+  budget, so the untested set is the same on a rerun. Untested mutants warn by
+  default; `--block-on-budget` makes them block. Not yet most-severe-first:
+  cargo-mutants has no way to order a single run, and a second run would pay a
+  second cold build.
+- **Weakened-test lane** (`weakened-tests`). Mutation testing cannot see a PR
+  that only deletes a test or trims its assertions: `--in-diff` mutates changed
+  code, and such a PR changes none, so it passed silently. The lane compares
+  each changed Rust file's tests at base and head: `test-removed` for a test no
+  changed file has any more (a test that moved under the same name is not
+  reported), `assertions-reduced` for a test whose `assert*!` / `#[should_panic]`
+  count fell. It runs before the language short-circuit, so deleting a whole
+  test file is caught too. Advisory; `--block-on-pattern weakened-tests` (or a
+  rule id) makes it block. In the report, the PR comment and SARIF.
+- **`--sarif <PATH>` — findings for GitHub code scanning** (Action inputs `sarif`,
+  `upload-sarif`). Writes SARIF 2.1.0 alongside the normal output: survivors
+  (critical/high → error, medium → warning, low → note), zero-assertion tests,
+  and the slop / security / convention / docs lanes, each on its file and line.
+  No fingerprints of its own: `upload-sarif` computes GitHub's per-line hash,
+  which keeps identical mutations in one file distinct (survivors read back from
+  cargo-mutants carry no function name to tell them apart). The Action removes
+  any old file before the run and uploads only one this run wrote, even when the
+  gate blocks.
+- **`--in-place` (Action input `in-place`) — no second cold build.** cargo-mutants
+  builds mutants in a scratch copy that starts without `target/`, so every run
+  paid a cold build after the pre-flight had just built the same tree, and a
+  cached `target/` (`Swatinem/rust-cache`) never reached the mutants. In place
+  they reuse it: on a small crate with two dependencies the first mutant's build
+  went from 4.0 s to 0.2 s. Mutants then run one at a time (`jobs` is ignored).
+  Off by default; meant for CI checkouts.
 - **Progression trees** (`src/progression/`, `slop-gate progression`) — an
   authored milestone tree (`progression.yaml`) resolved against the repository's
   own commits and PRs. Each part declares an evidence rule (path globs, a subject

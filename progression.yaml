@@ -224,6 +224,55 @@ nodes:
         xp: 20
         evidence: { paths: ["./src/progression/init.rs"] }
 
+  # ── 0.6.0: fast and actionable ──────────────────────────────────────────────
+  # A part closes on a commit that touches its file AND carries `gate-0.6: <id>` in its
+  # message (subject or body), so nothing here can close by accident on today's history.
+  - id: release_0_6
+    title: 0.6.0 — fast and actionable
+    summary: Fewer suite runs, a time budget, weakened-test detection, survivors on the line they live on.
+    requires: [mcp_lane, progression, turnover]
+    parts:
+      - id: preflight
+        title: One suite run before mutating, not three
+        xp: 15
+        evidence: { paths: ["./src/preflight.rs"], subject: 'gate-0\.6: preflight' }
+      - id: test_scope
+        title: Mutants run only the changed crate's tests
+        xp: 20
+        evidence: { paths: ["./src/mutants.rs"], subject: 'gate-0\.6: test-scope' }
+      - id: budget
+        title: Time budget, most severe mutants first
+        xp: 25
+        evidence: { paths: ["./src/**"], subject: 'gate-0\.6: budget' }
+      - id: ci_cache
+        title: Mutants reuse the cached build
+        xp: 10
+        evidence: { paths: ["./action.yml"], subject: 'gate-0\.6: ci-cache' }
+      - id: shard
+        title: Shard the run, merge the reports
+        xp: 15
+        evidence: { paths: ["./src/**"], subject: 'gate-0\.6: shard' }
+      - id: weakened_tests
+        title: Flag deleted tests, dropped asserts
+        xp: 25
+        evidence: { paths: ["./src/**"], subject: 'gate-0\.6: weakened-tests' }
+      - id: sarif
+        title: Findings as SARIF for code scanning
+        xp: 10
+        evidence: { paths: ["./src/**"], subject: 'gate-0\.6: sarif' }
+      - id: inline
+        title: Survivors inline on the PR
+        xp: 15
+        evidence: { paths: ["./src/**"], subject: 'gate-0\.6: inline' }
+      - id: since_last_push
+        title: New / open / resolved since last push
+        xp: 15
+        evidence: { paths: ["./src/report.rs"], subject: 'gate-0\.6: since-last-push' }
+      - id: release
+        title: Cut 0.6.0, verify the mirror got it all
+        xp: 10
+        evidence: { paths: ["./CHANGELOG.md"], subject: 'gate-0\.6: release' }
+
   - id: ga
     title: GA
     summary: Every adapter, every lane, and the plan visible from the README. A marker — it closes when its requirements do.

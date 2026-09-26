@@ -17,7 +17,8 @@ use crate::report::{GateReport, PreflightOutcome};
 use crate::runner::CommandRunner;
 use crate::turnover_lane;
 use crate::{
-    convention, debt, diff, docs_gate, engine, mcp_gate, security, slop, verdict, zero_assertion,
+    convention, debt, diff, docs_gate, engine, mcp_gate, mutants, security, slop, verdict,
+    weakened_tests, zero_assertion,
 };
 
 /// Run the full gate, returning the report (verdict included).
@@ -29,7 +30,15 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
     let scope = diff::compute_scope(&cfg.repo, &cfg.base_ref, &cfg.head_ref, work_dir)?;
 
     let mut report = GateReport::new(&cfg.base_ref, &cfg.head_ref);
+    report.shard = cfg.shard.clone();
+    report.base_commit = scope.base_commit.clone();
+    report.head_commit = scope.head_commit.clone();
+    report.test_settings = format!("tool={};timeout={}s", cfg.test_tool, cfg.timeout_secs);
     report.changed_rust_files = scope.changed_rust_files.clone();
+    // Narrowing only happens when the changed files resolve to a package: with
+    // none, cargo-mutants mutates and tests the whole workspace anyway.
+    report.rust_tests_changed_crate_only = cfg.test_changed_package_only
+        && !mutants::changed_packages(&cfg.repo, &scope.changed_rust_files).is_empty();
     report.changed_python_files = scope
         .changed_python_files
         .iter()
@@ -53,19 +62,36 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
 
     let diff_text = std::fs::read_to_string(&scope.diff_path).unwrap_or_default();
 
+    // A sharded run's lanes run on shard 1 alone, like the non-Rust engines:
+    // `merge-reports` keeps shard 1's lane results, so a lane that ran on a
+    // later shard too — an MCP probe, say — could fail there and be dropped.
+    let lanes_here = owns_lanes(cfg);
+
     // MCP lane: the only lane that runs the artifact rather than reading the
     // diff, and the only one that scopes itself by declared path rather than by
     // language. It therefore runs *before* the language short-circuit below — a
     // server whose surface this gate does not otherwise recognise (a config
     // file, a schema, a language with no mutation engine) is exactly the change
     // most likely to break it silently.
-    report.mcp = mcp_gate::run(runner, cfg, &scope.all_changed_files);
+    if lanes_here {
+        report.mcp = mcp_gate::run(runner, cfg, &scope.all_changed_files);
+    }
 
     // Turnover lane: reads history, not the diff, and has its own language set,
     // so it also runs before the language short-circuit. A missing baseline is
     // a skipped lane with a hint, never a block (see `turnover_lane`).
-    if cfg.turnover.enabled {
+    if lanes_here && cfg.turnover.enabled {
         report.turnover = Some(turnover_lane::run(cfg));
+    }
+
+    // Weakened-test lane: also before the short-circuit. Deleting a test file
+    // leaves no changed Rust file on the head side, so the language check below
+    // would end the run before any later lane saw the deletion.
+    if lanes_here {
+        let weakened = weakened_tests::scan(&scope.rust_versions);
+        if !weakened.findings.is_empty() {
+            report.weakened_tests = Some(weakened);
+        }
     }
 
     if scope.changed_rust_files.is_empty()
@@ -79,7 +105,7 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
 
     // Static signals from the diff — independent of the suite's health, so they
     // run even when mutation is later suppressed.
-    if !diff_text.is_empty() {
+    if lanes_here && !diff_text.is_empty() {
         // Phase 4: debt-delta (net complexity/duplication/coupling).
         report.debt = Some(debt::from_unified_diff(&diff_text));
 
@@ -113,7 +139,7 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
 
     // Zero-assertion static pre-check (Rust): independent of suite health, so it
     // runs even when mutation is later suppressed.
-    if cfg.check_zero_assertion_tests && !scope.changed_rust_files.is_empty() {
+    if lanes_here && cfg.check_zero_assertion_tests && !scope.changed_rust_files.is_empty() {
         report.zero_assertion_tests =
             zero_assertion::scan_files(&cfg.repo, &scope.changed_rust_files);
     }
@@ -123,7 +149,7 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
     // pre-flights are independent — a red suite for one language suppresses only
     // that language's mutation.
     for engine in engine::default_engines() {
-        if !engine.applies(&scope) {
+        if !engine.applies(&scope) || !runs_on_this_shard(cfg, engine.language()) {
             continue;
         }
         let pf = engine.preflight(runner, cfg)?;
@@ -148,11 +174,27 @@ pub fn run(runner: &dyn CommandRunner, cfg: &Config, work_dir: &Path) -> Result<
         report.caught += run.results.caught;
         report.timed_out += run.results.timed_out;
         report.unviable += run.results.unviable;
+        report.not_tested_budget += run.results.not_tested;
+        if let Some(fingerprint) = run.selection {
+            report.selection = fingerprint;
+        }
+        report.survivor_occurrence.extend(run.occurrences);
         report.tested += run.results.tested();
         report.survivors.extend(run.results.survivors);
     }
 
     Ok(finalize(report, cfg, started))
+}
+
+/// Only the Rust engine shards; the others run whole on shard 1 alone, so
+/// `merge-reports` does not count their results once per shard.
+fn runs_on_this_shard(cfg: &Config, language: &str) -> bool {
+    language == "Rust" || owns_lanes(cfg)
+}
+
+/// Unsharded, or shard 1: the run that owns everything but the Rust mutants.
+fn owns_lanes(cfg: &Config) -> bool {
+    cfg.shard_index().is_none_or(|(k, _)| k == 1)
 }
 
 /// Compute the verdict and elapsed time — the single exit point for every path.
@@ -360,6 +402,67 @@ mod tests {
             report.slop.as_ref().unwrap().findings.is_empty(),
             "slop findings must be empty when no slop patterns are in the diff"
         );
+    }
+
+    #[test]
+    fn only_rust_shards_and_every_other_engine_runs_on_shard_one_alone() {
+        let with = |shard: Option<&str>| Config {
+            shard: shard.map(Into::into),
+            ..Config::default()
+        };
+        // Unsharded: everything runs.
+        assert!(runs_on_this_shard(&with(None), "Python"));
+        // Shard 1 runs the other engines too; later shards only Rust.
+        assert!(runs_on_this_shard(&with(Some("1/3")), "Python"));
+        assert!(!runs_on_this_shard(&with(Some("2/3")), "Python"));
+        assert!(!runs_on_this_shard(&with(Some("3/3")), "JS/TS"));
+        assert!(runs_on_this_shard(&with(Some("3/3")), "Rust"));
+    }
+
+    #[test]
+    fn a_pr_that_only_deletes_a_test_file_is_still_reported() {
+        // No changed Rust file survives on the head side, so the language
+        // short-circuit ends the run early — the weakened-test lane must have
+        // run before it, or this PR passes with nothing said.
+        let work = tempdir().unwrap();
+        let dir = work.path();
+        git(dir, &["init", "-q"]);
+        git(dir, &["config", "user.email", "t@t.io"]);
+        git(dir, &["config", "user.name", "t"]);
+        write_files(
+            dir,
+            &[
+                (
+                    "src/lib.rs",
+                    "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+                ),
+                (
+                    "tests/math.rs",
+                    "#[test]\nfn adds() {\n    assert_eq!(demo::add(2, 3), 5);\n}\n",
+                ),
+            ],
+        );
+        git(dir, &["add", "-A"]);
+        git(dir, &["commit", "-q", "--no-gpg-sign", "-m", "base"]);
+        git(dir, &["rm", "-q", "tests/math.rs"]);
+        git(
+            dir,
+            &["commit", "-q", "--no-gpg-sign", "-m", "drop the red test"],
+        );
+
+        let runner = ScriptedRunner::new(); // nothing to mutate, nothing runs
+        let mut cfg = cfg_for(dir);
+        cfg.turnover.enabled = false;
+        let report = run(&runner, &cfg, dir).unwrap();
+        assert!(report.changed_rust_files.is_empty());
+        let w = report
+            .weakened_tests
+            .expect("the deleted test must be reported");
+        assert_eq!(w.findings.len(), 1);
+        assert_eq!(w.findings[0].rule, "test-removed");
+        assert_eq!(w.findings[0].file, "tests/math.rs");
+        // Advisory by default: reported, not blocking.
+        assert_eq!(report.verdict, crate::report::Verdict::Pass);
     }
 
     #[test]

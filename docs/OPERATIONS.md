@@ -30,13 +30,16 @@ only for a telemetry POST (HTTPS enforced; the Action sets it from its
 (measured in [`BENCHMARK.md`](../BENCHMARK.md); the orchestrator itself is
 ~11 ms). So operations = managing the build cache:
 
-- **Warm `target/` across runs** (`Swatinem/rust-cache@v2`). The baseline
-  build is the single biggest cold-start cost.
+- **Warm `target/` across runs** (`Swatinem/rust-cache@v2`) **and set
+  `in-place: true`.** The cold build is the single biggest start-up cost, and a
+  cached `target/` alone only reaches the pre-flight: cargo-mutants builds
+  mutants in a scratch copy with no `target/`. In place, they reuse it; mutants
+  then run one at a time.
 - **Keep `CARGO_INCREMENTAL` unset or `1`.** Setting it to `0` (a common CI
   "optimization") forces a full recompile *per mutant*.
-- **`--skip-preflight` when CI already ran the suite green this run.** It also
-  passes `--baseline skip` to cargo-mutants, skipping the engine's own
-  unmutated baseline build+test.
+- **`--skip-preflight` when CI already ran the suite green this run.** Then no
+  suite run happens before the first mutant. (cargo-mutants' own baseline is
+  always skipped: the gate only mutates after a green pre-flight.)
 - **`--test-tool nextest`** — per-process, highly parallel test phase, often
   2–3× faster (the Action installs `cargo-nextest` when selected).
 - The gate itself writes only a temp work dir (deleted on exit) and, if asked,
@@ -53,8 +56,43 @@ All defined in [`CONFIG.md`](CONFIG.md); ROI-ordered tuning list in
 | `max-per-function` | 5 | Directly caps the mutant count — the dominant cost driver. |
 | `timeout` | 60 s | Bounds a hung/slow mutant; each timeout burns the full budget. |
 | `jobs` | min(cores, 8) | Parallelism; raise on bigger runners. |
-| `test-changed-package-only` | off | Narrows the per-mutant test run in a workspace (may surface downstream-only false survivors). |
+| `test-workspace` | off | Widens the per-mutant test run from the changed crate to the whole workspace. Turn it on when a crate is tested mainly from another crate: with it off, a downstream-only catch shows as a survivor. |
 | `slop-gate estimate` | — | Predict the mutant count + latency band **before** paying for a run. |
+
+## Sharding a large run over a CI matrix
+
+`--shard k/n` runs one shard of the Rust mutants; the kept mutants are dealt
+round-robin in listing order, so every shard computes the same split. The other
+engines run on shard 1 only. Each shard writes a `--format json` report, and one
+job merges them: `merge-reports` sums the outcomes, recomputes the verdict under
+its own flags (so `--max-survivors` applies to the total) and comments once. It
+refuses a missing, duplicated or foreign shard, since a missing shard is
+untested mutants rather than a clean result.
+
+```yaml
+jobs:
+  shard:
+    strategy: { matrix: { shard: [1, 2, 3, 4] } }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: dtolnay/rust-toolchain@stable
+      # install cargo-mutants and slop-gate as in ACTION.md, then:
+      - run: slop-gate --base origin/main --shard ${{ matrix.shard }}/4 --format json --advisory > shard.json
+      - uses: actions/upload-artifact@v4
+        with: { name: "shard-${{ matrix.shard }}", path: shard.json }
+  merge:
+    needs: shard
+    runs-on: ubuntu-latest
+    permissions: { contents: read, pull-requests: write }
+    steps:
+      - uses: actions/download-artifact@v4
+      - run: slop-gate merge-reports --base origin/main --comment */shard.json
+```
+
+Run the shards `--advisory` (a shard's own verdict means nothing) and let the
+merge job decide: it exits 2 when the combined run blocks.
 
 ## Degraded modes (what the gate does when it can't do its job)
 
