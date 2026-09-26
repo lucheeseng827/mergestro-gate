@@ -28,7 +28,7 @@
 </style>
 <rect width="1840" height="524" fill="var(--paper)"/>
 <text x="24" y="36" font-size="19" font-weight="650">Mergestro Gate — phased build</text>
-<text class="muted" x="24" y="56" font-size="12">Level 5 · PoC → GA · 15/15 milestones · 41/41 parts · 199 commits · 19 PRs</text>
+<text class="muted" x="24" y="56" font-size="12">Level 5 · PoC → GA · 15/15 milestones · 41/41 parts · 200 commits · 19 PRs</text>
 <rect class="track" x="24" y="66" width="1792" height="8" rx="4"/>
 <rect class="bar" x="24" y="66" width="1792" height="8" rx="4" fill="var(--done)"/>
 <text class="muted mono" x="24" y="88" font-size="11">100% · 785 / 1200 XP to level 6</text>
@@ -152,7 +152,7 @@
   <rect class="card" x="1344" y="192" width="208" height="78" rx="10" stroke-width="1.5"/>
   <rect class="accent" x="1344" y="204" width="4" height="54" rx="2"/>
   <text class="title" x="1360" y="218" font-size="13.5" font-weight="600">Progression tree</text>
-  <text class="muted" x="1360" y="236" font-size="10.5">5/5 parts · 110 XP · 113 commits · 6 PRs</text>
+  <text class="muted" x="1360" y="236" font-size="10.5">5/5 parts · 110 XP · 114 commits · 6 PRs</text>
   <rect class="track" x="1360" y="248" width="176" height="6" rx="3"/>
   <rect class="bar" x="1360" y="248" width="176" height="6" rx="3"/>
 </g>

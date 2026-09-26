@@ -161,7 +161,7 @@ gate knobs). All inputs are optional.
 | `enable-python` | `"false"` | Install Python + cosmic-ray so changed `.py` files are mutation-tested (advisory PoC). Your project's own test deps (e.g. pytest) must already be installed. |
 | `python-version` | `"3.x"` | Python toolchain version (when `enable-python`). |
 | `cosmic-ray-version` | `"8.4.6"` | Pinned cosmic-ray release (when `enable-python`). |
-| `version` | `v0.6.0` | Release tag of the prebuilt musl binary to install (falls back to a source build if the release/asset is missing). |
+| `version` | `v0.6.1` | Release tag of the prebuilt musl binary to install (falls back to a source build if the release/asset is missing). |
 | `metrics-token` | `""` | Bearer token for the `metrics-url` POST. The Action exports it as `METRICS_TOKEN` for the gate's emitter and masks it in logs (`::add-mask::`). Required when `metrics-url` points at an authenticated Mergestro instance. |
 | `token` | `""` | GitHub token used to post the PR comment (falls back to `github.token`). |
 | `release-token` | `""` | Token with read access to the action repo's releases — required when the action repo is **private** (a consumer repo's default `GITHUB_TOKEN` can't read it). Also authenticates the source-build fallback. Masked in logs. |

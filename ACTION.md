@@ -76,7 +76,7 @@ runs the gate.
 | `metrics-file` | _(unset)_ | Append a JSON-Lines validation record (Phase 3 telemetry). |
 | `comment` | `true` | Post / update the idempotent PR comment. It also reports what is new, still open and resolved since the last run. |
 | `comment-inline` | `false` | Also post each surviving mutant as a review comment on its line, once each, retried if a review fails (GitHub only; needs `comment`). |
-| `version` | `v0.6.0` | Release tag of the prebuilt binary to install. |
+| `version` | `v0.6.1` | Release tag of the prebuilt binary to install. |
 | `token` | `GITHUB_TOKEN` | Token used to post the PR comment. |
 | `release-token` | _(unset)_ | Read-scoped PAT/App token to fetch the binary when the **action repo is private** — see [Private](#private-action-repo). |
 

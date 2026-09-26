@@ -252,7 +252,7 @@ idempotency key, so a retried CI step is a no-op.
       "col": 1, "row": 0
     }
   ],
-  "tool_version": "0.6.0"
+  "tool_version": "0.6.1"
 }
 ```
 

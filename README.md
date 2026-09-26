@@ -78,7 +78,7 @@ end, with three worked plans and prompts for authoring one with an assistant.
 | Pattern checker lanes | Done | 3/3 | 14 commits · 1 PR |
 | Maintainability drift lane | Done | 2/2 | 7 commits · 5 PRs |
 | MCP admission lane | Done | 2/2 | 4 commits · 1 PR |
-| Progression tree | Done | 5/5 | 113 commits · 6 PRs |
+| Progression tree | Done | 5/5 | 114 commits · 6 PRs |
 | 0.6.0 — fast and actionable | Done | 10/10 | 6 commits · 6 PRs |
 | GA | Done | 0/0 | — |
 <!-- mergestro:progression:end -->
@@ -92,7 +92,7 @@ Three ways to run it — fastest first. Full detail is linked from each.
 | Your setup | Use | Why |
 | ---------- | --- | --- |
 | **GitHub Actions** | the **Action** (§1) | Pulls a ~5 MB static binary onto a runner that already has the Rust toolchain. No image to pull. The primary, fastest path. |
-| **GitLab CI / Gitea / Jenkins / other CI** | the **Docker image** (`mancube/mergestro-gate`) | Toolchain + `cargo-mutants` baked in, so the gate runs with zero setup. Copy-paste examples for each: [`ci-example/`](./ci-example). ~300 MB pull. |
+| **GitLab CI / Gitea / Jenkins / other CI** | the **Docker image** (`mancube/mergestro-gate`) | Toolchain + `cargo-mutants` baked in, so the gate runs with zero setup. Copy-paste examples for each: [`ci-example/`](./ci-example). ~280 MB pull. |
 | **Local / one-off** | the **CLI** (§2) or the image | Build the binary once, or `docker run` the image against a checkout. |
 
 The image is intentionally large — it carries the Rust toolchain because the

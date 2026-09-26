@@ -8,7 +8,7 @@
 
 [package]
 name = "mergestro-gate"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Mergestro Gate — behavioral merge gate (Phase 4: blocking differential mutation gate for Rust, with severity ranking, a debt-delta budget, validation telemetry and a trend dashboard)"

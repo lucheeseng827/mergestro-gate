@@ -6,6 +6,18 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-26
+
+### Changed
+- **Smaller Docker image: 1.08 GB → 804 MB (359 → 278 MB compressed).**
+  The runtime is now plain Alpine plus a pruned copy of the `rust:1-alpine`
+  toolchain, without `rust-lld`, `wasm-component-ld`, the nightly-only sanitizer
+  runtimes and the docs, none of which compile, link or test mutants for the
+  host target. `slop-gate` and `cargo-mutants` are stripped, and cargo-mutants is
+  built in the builder stage so its build caches stay out of the image. Gate
+  results are unchanged (checked on a crate with a proc-macro, a build script and
+  a doctest-only function).
+
 ## [0.6.0] - 2026-09-26
 
 Fast and actionable: fewer suite runs and a time budget, findings on the line

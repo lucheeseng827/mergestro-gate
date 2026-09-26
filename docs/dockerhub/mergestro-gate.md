@@ -8,8 +8,8 @@ lines: it mutates your diff, reruns the suite, and any mutant that survives is a
 line your tests don't really check. It also runs static **slop**, **security**,
 and **convention** lanes over the same diff. One verdict, gate-able in CI.
 
-- **Image:** `mancube/mergestro-gate` — `slop-gate` CLI on **Alpine** (`rust:1-alpine`), with the Rust toolchain + **`cargo-mutants`** baked in, so the mutation gate runs **fully in-container** (no toolchain to wire up).
-- **Arch:** `linux/amd64` (arm64 buildable on demand — see *Multi-arch* below) · **Runs as:** nonroot (uid 65532)
+- **Image:** `mancube/mergestro-gate` — `slop-gate` CLI on **Alpine**, with the Rust toolchain (from `rust:1-alpine`) + **`cargo-mutants`** baked in, so the mutation gate runs **fully in-container** (no toolchain to wire up). ~280 MB compressed.
+- **Arch:** `linux/amd64` + `linux/arm64` (multi-arch manifest) · **Runs as:** nonroot (uid 65532)
 - **Binary inside:** `/usr/local/bin/slop-gate` (entrypoint) · **Workdir / mount point:** `/work`
 - **Source / full docs:** github.com/lucheeseng827/mergestro-gate · Apache-2.0
 
@@ -53,10 +53,31 @@ nothing else — no queue, no webhook, no long-running service.
 | Tag | Notes |
 |---|---|
 | `latest` | newest release |
-| `0.6.0` | pinned version (= current `latest`) |
+| `0.6.1` | pinned version (= current `latest`) |
+| `0.6`   | latest `0.6.x` |
 | `0.5`   | latest `0.5.x` |
 
-Pin a version in CI: `mancube/mergestro-gate:0.6.0`.
+Pin a version in CI: `mancube/mergestro-gate:0.6.1`.
+
+## New in 0.6.0
+
+- **Faster by default** — one suite run before the first mutant (was up to
+  three), and each mutant runs only the changed crate's tests
+  (`--test-workspace` restores whole-workspace tests).
+- **`--budget 10m`** — a wall-clock limit on the mutation run; unfinished
+  mutants are reported as *not tested*, never as caught or surviving
+  (`--block-on-budget` to make that block).
+- **`--sarif out.sarif`** — findings as SARIF 2.1.0 for code scanning.
+- **Weakened-test lane** — flags a change that deletes tests or removes
+  assertions, which mutation testing cannot see
+  (`--block-on-pattern weakened-tests` to block).
+- **Since the last run** — the PR comment reports new · still open · resolved;
+  `--comment-inline` also posts survivors on their line (GitHub).
+- **`--shard k/n` + `slop-gate merge-reports`** — split a large run across CI
+  jobs and publish one verdict.
+
+Details and examples: the
+[0.6.0 feature guide](https://github.com/lucheeseng827/mergestro-gate#using-the-060-features).
 
 ## What's inside
 
@@ -75,19 +96,19 @@ checkout with the base ref fetched (e.g. `git fetch origin main`).
 
 ```bash
 # Behavioral gate over the working tree's diff vs origin/main:
-docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.6.0 \
+docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.6.1 \
   --repo /work --base origin/main
 
 # Predict the mutant workload first, without building/testing (fast):
-docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.6.0 \
+docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.6.1 \
   estimate --repo /work --base origin/main
 
 # Summarise telemetry from prior runs (--metrics-file output):
-docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.6.0 \
+docker run --rm -v "$PWD:/work" mancube/mergestro-gate:0.6.1 \
   analyze --metrics-file /work/slop-gate-metrics.jsonl
 
 # Help / version:
-docker run --rm mancube/mergestro-gate:0.6.0 --help
+docker run --rm mancube/mergestro-gate:0.6.1 --help
 ```
 
 > The gate compiles + tests every mutant in your diff, so wall-clock scales with
@@ -100,16 +121,17 @@ Prefer your own toolchained image? Copy the binary in and bring your own
 
 ```dockerfile
 FROM rust:1-bookworm
-COPY --from=mancube/mergestro-gate:0.6.0 /usr/local/bin/slop-gate /usr/local/bin/slop-gate
+COPY --from=mancube/mergestro-gate:0.6.1 /usr/local/bin/slop-gate /usr/local/bin/slop-gate
 RUN cargo install cargo-mutants
 ENTRYPOINT ["slop-gate"]
 ```
 
 ## Multi-arch
 
-Published images are `linux/amd64`. An `arm64` build exists but is opt-in — the
-arm64 leg compiles `cargo-mutants` under QEMU emulation (slow), so it's run on
-demand via the repo's `Publish Docker image` workflow rather than every release.
+Every release is published for **`linux/amd64` and `linux/arm64`** under one
+multi-arch manifest, so `docker pull` picks the right one for the host (x86-64
+runners, Apple Silicon, Graviton). Each architecture is built natively, not
+under emulation.
 
 ## In CI
 
